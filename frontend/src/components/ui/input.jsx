@@ -1,8 +1,10 @@
+import { HIDE_NUMBERS, HIDDEN_VALUE } from "@/lib/privacy";
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
 const Input = React.forwardRef(({ className, type, ...props }, ref) => {
+  const masked = HIDE_NUMBERS && (type === "number" || props.inputMode === "decimal");
   return (
     <input
       type={type}
@@ -11,7 +13,8 @@ const Input = React.forwardRef(({ className, type, ...props }, ref) => {
         className
       )}
       ref={ref}
-      {...props} />
+      {...props}
+      {...(masked ? { type: "text", value: HIDDEN_VALUE, disabled: true, title: "Sayısal değer gizli", "aria-label": "Sayısal değer gizli" } : {})} />
   );
 })
 Input.displayName = "Input"

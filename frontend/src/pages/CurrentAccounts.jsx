@@ -1,3 +1,4 @@
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { api, fmtUSD, fmtDate } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
@@ -31,7 +32,7 @@ export default function CurrentAccounts() {
   };
 
   return (
-    <Page title="Cari Hesaplar" subtitle={`${accounts.length} cari · Toplam bakiye USD`}>
+    <Page title="Cari Hesaplar" subtitle={`${privateValue(accounts.length)} cari · Toplam bakiye USD`}>
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <Card className="lg:col-span-5 overflow-hidden">
           <div className="px-5 py-4 border-b border-[#E5E5EA]/50">
@@ -56,7 +57,7 @@ export default function CurrentAccounts() {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-[#1D1D1F] truncate">{a.name}</div>
-                    <div className="text-xs text-[#86868B]">{a.count} kayıt</div>
+                    <div className="text-xs text-[#86868B]">{privateValue(a.count)} kayıt</div>
                   </div>
                   <div className="text-right">
                     <div className={`text-sm font-semibold tabular-nums ${a.balance > 0 ? "text-[#D92D20]" : "text-[#1F8942]"}`}>{fmtUSD(a.balance)}</div>

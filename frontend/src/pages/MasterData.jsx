@@ -1,9 +1,11 @@
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Database, Plus, Trash2, Edit3, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -32,6 +34,25 @@ const FIELD_LABELS = {
   rate_to_tl: "TL Karşılığı", color: "Renk", order: "Sıra", country: "Ülke",
 };
 
+const STATUS_COLORS = [
+  { value: "neutral", label: "Gri", color: "#636366" },
+  { value: "warning", label: "Sarı", color: "#B26205" },
+  { value: "info", label: "Mavi", color: "#0062CC" },
+  { value: "danger", label: "Kırmızı", color: "#D92D20" },
+  { value: "success", label: "Yeşil", color: "#1F8942" },
+];
+
+const StatusColor = ({ value }) => {
+  const option = STATUS_COLORS.find((c) => c.value === value);
+  if (!option) return <span>{value || "—"}</span>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: option.color }} />
+      {option.label}
+    </span>
+  );
+};
+
 export default function MasterData() {
   const [activeKey, setActiveKey] = useState(COLLECTIONS[0].key);
   const [items, setItems] = useState([]);
@@ -58,7 +79,7 @@ export default function MasterData() {
     return Object.values(i).some(v => String(v || "").toLowerCase().includes(search.toLowerCase()));
   });
 
-  const openCreate = () => { setEditing({}); setOpen(true); };
+  const openCreate = () => { setEditing(activeKey === "payment_statuses" ? { color: "neutral" } : {}); setOpen(true); };
   const openEdit = (item) => { setEditing({...item}); setOpen(true); };
 
   const save = async () => {
@@ -106,7 +127,7 @@ export default function MasterData() {
           <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-[#1D1D1F]">{active.label}</h3>
-              <p className="text-xs text-[#86868B] mt-0.5">{filtered.length} kayıt</p>
+              <p className="text-xs text-[#86868B] mt-0.5">{privateValue(filtered.length)} kayıt</p>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative flex-1 sm:flex-initial">
@@ -138,7 +159,7 @@ export default function MasterData() {
                   {filtered.map((row) => (
                     <tr key={row.id} data-testid={`row-master-${row.id}`} onClick={() => openEdit(row)} className="border-b border-[#F5F5F7] hover:bg-[#FAFAFA] cursor-pointer transition">
                       {active.fields.map((f) => (
-                        <td key={f} className="px-4 py-2 text-[#1D1D1F] truncate max-w-xs">{String(row[f] ?? "—")}</td>
+                        <td key={f} className="px-4 py-2 text-[#1D1D1F] truncate max-w-xs">{activeKey === "payment_statuses" && f === "color" ? <StatusColor value={row[f]} /> : ["balance", "rate_to_tl"].includes(f) ? privateValue(String(row[f] ?? "—")) : String(row[f] ?? "—")}</td>
                       ))}
                       <td className="px-4 py-2 text-right">
                         <button onClick={(e) => { e.stopPropagation(); remove(row.id); }} className="p-1.5 rounded-md hover:bg-[#FFEBEA] text-[#86868B] hover:text-[#D92D20] transition">
@@ -165,12 +186,29 @@ export default function MasterData() {
               {active.fields.map((f) => (
                 <div key={f} className="space-y-1.5">
                   <Label className="text-[11px] font-semibold uppercase tracking-wider text-[#86868B]">{FIELD_LABELS[f] || f}</Label>
-                  <Input
+                  {activeKey === "payment_statuses" && f === "color" ? (
+                    <Select value={editing.color || ""} onValueChange={(color) => setEditing({ ...editing, color })}>
+                      <SelectTrigger data-testid="select-status-color" aria-label="Renk" className="bg-[#F5F5F7] border-0 rounded-lg">
+                        <SelectValue placeholder="Renk seçin" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {editing.color && !STATUS_COLORS.some((c) => c.value === editing.color) && (
+                          <SelectItem value={editing.color}>{editing.color}</SelectItem>
+                        )}
+                        {STATUS_COLORS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            <StatusColor value={option.value} />
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : <Input
                     data-testid={`input-${f}`}
+                    inputMode={["balance", "rate_to_tl"].includes(f) ? "decimal" : undefined}
                     value={editing[f] ?? ""}
                     onChange={(e) => setEditing({...editing, [f]: e.target.value})}
                     className="bg-[#F5F5F7] border-0 rounded-lg"
-                  />
+                  />}
                 </div>
               ))}
               <div className="flex gap-2 pt-4 border-t border-[#E5E5EA]">

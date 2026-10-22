@@ -1,3 +1,4 @@
+import { privateText } from "@/lib/privacy";
 import { useEffect, useRef, useState } from "react";
 import { api, fmtDate, fmtUSD, formatApiError } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
@@ -285,7 +286,7 @@ const Message = ({ msg, onExecute, onDownload }) => {
         {isUser ? <UserIcon className="w-4 h-4 text-[#1D1D1F]" strokeWidth={1.5}/> : <Sparkles className="w-4 h-4 text-white" strokeWidth={1.5}/>}
       </div>
       <div className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${isUser ? "bg-[#111111] text-white rounded-tr-md" : "bg-[#F5F5F7] text-[#1D1D1F] rounded-tl-md"}`}>
-        <pre className="font-sans whitespace-pre-wrap break-words">{msg.content}</pre>
+        <pre className="font-sans whitespace-pre-wrap break-words">{privateText(msg.content)}</pre>
         {msg.download_url && (
           <button
             data-testid="btn-download-pdf"
@@ -322,13 +323,13 @@ const ActionCard = ({ msg, onExecute }) => {
             </div>
           </div>
           <div className="px-4 py-3 text-sm text-[#1D1D1F]">
-            <div className="mb-3">{msg.content}</div>
+            <div className="mb-3">{privateText(msg.content)}</div>
             {Object.keys(params).length > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5 text-xs bg-[#FAFAFA] rounded-lg p-3">
                 {Object.entries(params).filter(([k, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-2">
                     <span className="text-[#86868B] capitalize">{k.replace(/_/g, " ")}:</span>
-                    <span className="font-medium text-[#1D1D1F] text-right truncate">{String(v)}</span>
+                    <span className="font-medium text-[#1D1D1F] text-right truncate">{privateText(String(v))}</span>
                   </div>
                 ))}
               </div>

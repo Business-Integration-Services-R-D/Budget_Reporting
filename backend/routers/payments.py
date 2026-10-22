@@ -1,9 +1,11 @@
 """Payments router."""
 from typing import Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from database import db
 from dependencies import get_current_user, write_audit, _uid, _now
+
+from settlements import settlement_lock, prepare_payment, sync_payable, normalize_payment_amount
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -55,30 +57,11 @@ async def create_payment(body: PaymentInput, user: dict = Depends(get_current_us
     doc["id"] = _uid()
     doc["created_at"] = _now()
     doc["created_by"] = user["email"]
-    if not doc.get("usd_amount") and doc.get("amount") and doc.get("fx_rate"):
-        try:
-            if (doc.get("currency") or "").upper() == "USD":
-                doc["usd_amount"] = float(doc["amount"])
-            else:
-                usd = await db.currencies.find_one({"code": "USD"}, {"_id": 0})
-                usd_rate = (usd or {}).get("rate_to_tl", 0) or 1
-                tl_value = float(doc["amount"]) * float(doc["fx_rate"])
-                doc["usd_amount"] = tl_value / usd_rate if usd_rate else 0
-        except Exception:
-            pass
-    await db.payments.insert_one(doc)
-
-    if doc.get("payable_id"):
-        payable = await db.payables.find_one({"id": doc["payable_id"]}, {"_id": 0})
-        if payable:
-            paid_sum = await db.payments.aggregate([
-                {"$match": {"payable_id": doc["payable_id"]}},
-                {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}}}
-            ]).to_list(1)
-            total_paid = (paid_sum[0]["total"] if paid_sum else 0)
-            target = payable.get("usd_amount", 0)
-            new_status = "ÖDENDİ" if total_paid >= (target - 0.01) else "KISMİ ÖDEME"
-            await db.payables.update_one({"id": doc["payable_id"]}, {"$set": {"status": new_status, "updated_at": _now()}})
+    await normalize_payment_amount(db, doc)
+    async with settlement_lock(doc.get("payable_id")):
+        await prepare_payment(db, doc)
+        await db.payments.insert_one(doc)
+        await sync_payable(db, doc.get("payable_id"))
     await write_audit(user, "create", "payment", doc["id"])
     doc.pop("_id", None)
     return doc
@@ -86,16 +69,34 @@ async def create_payment(body: PaymentInput, user: dict = Depends(get_current_us
 
 @router.put("/{pid}")
 async def update_payment(pid: str, body: PaymentInput, user: dict = Depends(get_current_user)):
+    old = await db.payments.find_one({"id": pid})
+    if not old:
+        raise HTTPException(404, "Ödeme bulunamadı.")
     update = body.model_dump(exclude_unset=True)
-    update.pop("id", None)
-    update["updated_at"] = _now()
-    await db.payments.update_one({"id": pid}, {"$set": update})
+    for field in ("id", "_id", "created_at", "created_by"):
+        update.pop(field, None)
+    doc = {**old, **update}
+    if any(field in update for field in ("amount", "currency", "fx_rate")) and "usd_amount" not in update:
+        doc["usd_amount"] = 0
+    await normalize_payment_amount(db, doc)
+    doc["updated_at"] = _now()
+    async with settlement_lock(old.get("payable_id"), doc.get("payable_id")):
+        await prepare_payment(db, doc, pid)
+        doc.pop("_id", None)
+        await db.payments.update_one({"id": pid}, {"$set": doc})
+        for linked_id in set(filter(None, [old.get("payable_id"), doc.get("payable_id")])):
+            await sync_payable(db, linked_id)
     await write_audit(user, "update", "payment", pid)
     return {"ok": True}
 
 
 @router.delete("/{pid}")
 async def delete_payment(pid: str, user: dict = Depends(get_current_user)):
-    await db.payments.delete_one({"id": pid})
+    old = await db.payments.find_one({"id": pid})
+    if not old:
+        raise HTTPException(404, "Ödeme bulunamadı.")
+    async with settlement_lock(old.get("payable_id")):
+        await db.payments.delete_one({"id": pid})
+        await sync_payable(db, old.get("payable_id"))
     await write_audit(user, "delete", "payment", pid)
     return {"ok": True}

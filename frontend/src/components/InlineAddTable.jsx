@@ -478,7 +478,7 @@ const Cell = ({ id, column, value, onChange, invalid, listId, min }) => {
         <SelectContent className="max-h-72">
           {(column.options || []).filter(Boolean).map((o) => (
             <SelectItem key={o} value={o}>
-              {o}
+              {column.optionLabel ? column.optionLabel(o) : o}
             </SelectItem>
           ))}
         </SelectContent>
@@ -556,11 +556,11 @@ const SearchableSelect = ({ id, column, value, onChange, className, invalid }) =
           aria-invalid={invalid}
           className={cn(className, "flex items-center justify-between gap-1 px-3 text-left")}
         >
-          <span className={cn("truncate", !value && "text-[#A1A1A6]")}>{value || column.placeholder || "Seçin"}</span>
+          <span className={cn("truncate", !value && "text-[#A1A1A6]")}>{(value && column.optionLabel ? column.optionLabel(value) : value) || column.placeholder || "Seçin"}</span>
           <ChevronDown className="w-4 h-4 shrink-0 text-[#86868B]" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[300px] p-0 rounded-xl">
+      <PopoverContent align="start" className={cn("max-w-[90vw] p-0 rounded-xl", column.optionLabel ? "w-[560px]" : "w-[300px]")}>
         <Command>
           <CommandInput placeholder={`${column.label} ara…`} />
           <CommandList>
@@ -572,9 +572,9 @@ const SearchableSelect = ({ id, column, value, onChange, className, invalid }) =
                 </CommandItem>
               )}
               {options.map((o) => (
-                <CommandItem key={o} value={o} onSelect={() => pick(o)}>
+                <CommandItem key={o} value={column.optionLabel ? `${column.optionLabel(o)} ${o}` : o} onSelect={() => pick(o)}>
                   <Check className={cn("w-4 h-4", value === o ? "opacity-100" : "opacity-0")} />
-                  <span className="truncate">{o}</span>
+                  <span className={column.optionLabel ? "whitespace-normal" : "truncate"}>{column.optionLabel ? column.optionLabel(o) : o}</span>
                 </CommandItem>
               ))}
             </CommandGroup>

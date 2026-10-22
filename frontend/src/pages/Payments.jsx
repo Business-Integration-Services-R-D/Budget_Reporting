@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, fmtUSD, fmtDate, formatApiError } from "@/lib/api";
+import { privateValue } from "@/lib/privacy";
 import { Page, Card, StatusBadge, EmptyState } from "@/components/Primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,325 +8,193 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { InlineAddTable, InlineAddToggle, parseMoney, formatMoney } from "@/components/InlineAddTable";
-import { Plus, Search, CreditCard, Trash2, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
+import { Search, CreditCard, Trash2, ArrowUpRight, ArrowDownLeft, ChevronDown, Plus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-const ADD_PANEL_ID = "payment-inline-add";
+const localDate = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+const actionName = (kind) => kind === "RECEIVABLE" ? "Tahsil Et" : "Ödeme Yap";
+const remaining = (p) => ["ÖDENDİ", "İPTAL"].includes(p.status) ? 0 : (p.remaining_usd ?? p.usd_amount ?? 0);
+const canSettle = (p) => p.status !== "İPTAL" && (p.remaining_usd ?? p.usd_amount ?? 0) > 0;
+const unlinkedPaid = (p) => p.status === "ÖDENDİ" && p.remaining_usd == null;
 
 export default function Payments() {
+  const [payables, setPayables] = useState([]);
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [bankFilter, setBankFilter] = useState("all");
-  const [addOpen, setAddOpen] = useState(false);
-  const [masters, setMasters] = useState({ banks: [], vendors: [], ships: [], companies: [], currencies: [], paymentMethods: [] });
+  const [masters, setMasters] = useState({ banks: [], vendors: [], ships: [], companies: [], currencies: [] });
   const [fxRates, setFxRates] = useState([]);
-  const addPanelRef = useRef(null);
+  const [kind, setKind] = useState("PAYABLE");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
+    setError("");
     try {
-      const params = new URLSearchParams();
-      if (typeFilter !== "all") params.append("type", typeFilter);
-      if (bankFilter !== "all") params.append("bank", bankFilter);
-      if (search) params.append("search", search);
-      const { data } = await api.get(`/payments?${params.toString()}`);
-      setItems(data);
-    } catch (e) { toast.error(formatApiError(e)); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [typeFilter, bankFilter]);
-  useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); /* eslint-disable-next-line */ }, [search]);
-
-  useEffect(() => {
-    (async () => {
-      const [banks, vendors, ships, companies, currencies, methods, fx] = await Promise.all([
-        api.get("/master/banks"), api.get("/master/vendors"), api.get("/master/ships"),
-        api.get("/master/companies"), api.get("/master/currencies"), api.get("/master/payment_methods"),
-        api.get("/fx/latest"),
+      const [debts, receivables, movements] = await Promise.all([
+        api.get("/payables?kind=PAYABLE&limit=5000"),
+        api.get("/payables?kind=RECEIVABLE&limit=5000"),
+        api.get("/payments?limit=5000"),
       ]);
-      setMasters({ banks: banks.data, vendors: vendors.data, ships: ships.data, companies: companies.data, currencies: currencies.data, paymentMethods: methods.data });
-      setFxRates(fx.data);
-    })();
+      setPayables([...debts.data, ...receivables.data]);
+      setItems(movements.data);
+    } catch (e) { setError(formatApiError(e)); }
+    finally { setLoading(false); }
   }, []);
 
-  const fxRateOf = (code) => {
-    if (!code || code === "TL") return 1;
-    return fxRates.find((c) => c.code === code)?.rate_to_tl || 0;
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const [banks, vendors, ships, companies, currencies, fx] = await Promise.all([
+          api.get("/master/banks"), api.get("/master/vendors"), api.get("/master/ships"),
+          api.get("/master/companies"), api.get("/master/currencies"), api.get("/fx/latest"),
+        ]);
+        if (active) {
+          setMasters({ banks: banks.data, vendors: vendors.data, ships: ships.data, companies: companies.data, currencies: currencies.data });
+          setFxRates(fx.data);
+        }
+      } catch (e) { if (active) toast.error(formatApiError(e)); }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const fxRateOf = (code) => code === "TL" ? 1 : (fxRates.find((c) => c.code === code)?.rate_to_tl || 0);
+  const changeAmount = (patch) => {
+    setEditing((previous) => {
+      const next = { ...previous, ...patch };
+      next.usd_amount = next.currency === "USD" ? Number(next.amount || 0)
+        : Number(next.amount || 0) * Number(next.fx_rate || 0) / (fxRateOf("USD") || 1);
+      return next;
+    });
   };
-
-  /** Tutarı güncel TCMB kurlarıyla USD'ye çevirir. */
-  const toUsd = (amount, code) => {
-    if (!amount) return 0;
-    if (!code || code === "USD") return amount;
-    const usdRate = fxRates.find((c) => c.code === "USD")?.rate_to_tl;
-    const rate = fxRateOf(code);
-    if (!rate || !usdRate) return 0;
-    return (amount * rate) / usdRate;
+  const linkFields = (p) => ({
+    payable_id: p.id, type: p.kind === "RECEIVABLE" ? "TAHSİL" : "TEDİYE",
+    vendor: p.vendor || "", ship: p.ship || "",
+  });
+  const startPayment = (p) => {
+    const amount = p.remaining_usd ?? p.usd_amount ?? 0;
+    setEditing({ ...linkFields(p), date: localDate(), description: p.description || "",
+      currency: "USD", amount, usd_amount: amount, fx_rate: fxRateOf("USD"),
+      payment_method: "", paying_company: "" });
   };
-
-  const addRowTemplate = useMemo(() => ({
-    type: "TEDİYE",
-    date: new Date().toISOString().slice(0, 10),
-    vendor: "",
-    description: "",
-    paying_company: "",
-    payment_method: "",
-    ship: "",
-    amount: "",
-    currency: "USD",
-    fx_rate: "",
-    usd_amount: "",
-  }), []);
-
-  const addColumns = useMemo(() => [
-    { key: "type", label: "Tip", type: "select", searchable: false, required: true, width: 130, options: ["TEDİYE", "TAHSİL"] },
-    { key: "date", label: "Tarih", type: "date", required: true, width: 132 },
-    { key: "vendor", label: "Firma", type: "select", width: 200, options: masters.vendors.map((v) => v.name) },
-    { key: "description", label: "Açıklama", type: "text", placeholder: "Açıklama giriniz…", width: 200 },
-    { key: "paying_company", label: "Şirket", type: "select", searchable: false, width: 150, options: masters.companies.map((c) => c.name) },
-    { key: "payment_method", label: "Hesap / Banka", type: "select", width: 170, options: masters.banks.map((b) => b.name) },
-    { key: "ship", label: "Gemi / Birim", type: "select", width: 160, options: masters.ships.map((s) => s.name) },
-    { key: "amount", label: "Tutar", type: "money", required: true, width: 130 },
-    { key: "currency", label: "Döviz", type: "select", searchable: false, width: 110, options: masters.currencies.map((c) => c.code) },
-    { key: "fx_rate", label: "Kur", type: "money", decimals: 4, width: 120 },
-    { key: "usd_amount", label: "USD Karşılığı", type: "money", width: 130 },
-  ], [masters]);
-
-  /** Kur ve USD karşılığını dövize/tutara göre türetir; elle girilen değeri ezmez. */
-  const onAddRowChange = ({ row, key, touched }) => {
-    if (key !== "amount" && key !== "currency" && key !== "fx_rate") return null;
-    const patch = {};
-    if (key === "currency" && !touched.fx_rate) {
-      patch.fx_rate = formatMoney(fxRateOf(row.currency), 4);
-    }
-    if (!touched.usd_amount) {
-      const amount = parseMoney(row.amount);
-      patch.usd_amount = amount ? formatMoney(toUsd(amount, row.currency)) : "";
-    }
-    return Object.keys(patch).length ? patch : null;
-  };
-
-  const saveNewRows = async (rows) => {
-    const results = await Promise.allSettled(rows.map((r) => {
-      const amount = parseMoney(r.amount);
-      const usd = parseMoney(r.usd_amount);
-      return api.post("/payments", {
-        type: r.type,
-        date: r.date,
-        vendor: r.vendor || null,
-        description: r.description.trim() || null,
-        paying_company: r.paying_company || null,
-        payment_method: r.payment_method || null,
-        ship: r.ship || null,
-        amount,
-        currency: r.currency,
-        fx_rate: parseMoney(r.fx_rate) || fxRateOf(r.currency),
-        usd_amount: usd || toUsd(amount, r.currency),
-      });
-    }));
-
-    const failed = rows.filter((_, i) => results[i].status === "rejected").map((r) => r._id);
-    const savedCount = rows.length - failed.length;
-    if (savedCount > 0) {
-      toast.success(`${savedCount} hareket kaydedildi`);
-      load();
-    }
-    if (failed.length) {
-      toast.error(formatApiError(results.find((r) => r.status === "rejected").reason));
-    }
-    return { failed };
-  };
-
-  const summary = useMemo(() => {
-    const tediye = items.filter(i => i.type === "TEDİYE").reduce((s, i) => s + (i.usd_amount || 0), 0);
-    const tahsil = items.filter(i => i.type === "TAHSİL").reduce((s, i) => s + (i.usd_amount || 0), 0);
-    return { tediye, tahsil, count: items.length };
-  }, [items]);
-
-  const openEdit = (item) => { setEditing(item); setOpen(true); };
+  const startIndependent = () => setEditing({
+    type: kind === "RECEIVABLE" ? "TAHSİL" : "TEDİYE", payable_id: null,
+    date: localDate(), currency: "USD", amount: "", usd_amount: 0,
+    fx_rate: fxRateOf("USD"), vendor: "", ship: "", description: "", payment_method: "", paying_company: "",
+  });
+  const linked = editing && payables.find((p) => p.id === editing.payable_id);
+  const isReceipt = editing?.type === "TAHSİL";
 
   const save = async () => {
+    if (saving) return;
+    if (!editing.date || !(Number(editing.amount) > 0) || !(Number(editing.usd_amount) > 0)) {
+      toast.error("Tarih ve sıfırdan büyük bir tutar girin."); return;
+    }
+    setSaving(true);
     try {
-      if (editing.id) {
-        await api.put(`/payments/${editing.id}`, editing);
-        toast.success("Güncellendi");
-      } else {
-        await api.post("/payments", editing);
-        toast.success("Kaydedildi");
-      }
-      setOpen(false); setEditing(null); load();
+      const payload = { ...editing, payable_id: editing.payable_id || null };
+      if (payload.id) await api.put(`/payments/${payload.id}`, payload);
+      else await api.post("/payments", payload);
+      toast.success(isReceipt ? "Tahsilat kaydedildi" : "Ödeme kaydedildi");
+      setEditing(null);
+      await load();
     } catch (e) { toast.error(formatApiError(e)); }
+    finally { setSaving(false); }
+  };
+  const remove = async (p) => {
+    if (!window.confirm("Bu hareket silinsin mi? Bağlı kaydın kalan tutarı yeniden hesaplanır.")) return;
+    try { await api.delete(`/payments/${p.id}`); toast.success("Hareket silindi"); await load(); }
+    catch (e) { toast.error(formatApiError(e)); }
   };
 
-  const remove = async (id) => {
-    if (!window.confirm("Bu hareket silinsin mi?")) return;
-    await api.delete(`/payments/${id}`);
-    toast.success("Silindi"); load();
-  };
+  const visible = useMemo(() => {
+    const q = query.toLocaleLowerCase("tr-TR").trim();
+    return payables.filter((p) => p.kind === kind &&
+      (status === "all" || (status === "open" ? !["ÖDENDİ", "İPTAL"].includes(p.status) : ["ÖDENDİ", "İPTAL"].includes(p.status))) &&
+      (!q || [p.vendor, p.ship, p.description, p.status].some((v) => String(v || "").toLocaleLowerCase("tr-TR").includes(q)))
+    ).sort((a, b) => String(a.due_date || "9999").localeCompare(String(b.due_date || "9999")));
+  }, [payables, kind, query, status]);
+  const movements = items.filter((p) => !historyQuery || [p.vendor, p.description, p.payment_method,
+    p.type === "TAHSİL" ? "Tahsilat" : "Ödeme"].some((v) => String(v || "").toLocaleLowerCase("tr-TR").includes(historyQuery.toLocaleLowerCase("tr-TR"))));
+
+  const recordAction = (p) => (
+    <Button size="sm" disabled={!canSettle(p)} data-testid={`register-pay-${p.id}`} onClick={() => startPayment(p)} className="rounded-lg bg-[#111111] hover:bg-[#2C2C2E] text-white gap-1.5">
+      {p.kind === "RECEIVABLE" ? <ArrowDownLeft className="w-3.5 h-3.5" /> : <ArrowUpRight className="w-3.5 h-3.5" />}
+      {unlinkedPaid(p) ? (p.kind === "RECEIVABLE" ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet") : actionName(p.kind)}
+    </Button>
+  );
+  const amountDetails = (p) => <>
+    <div className="font-semibold tabular-nums">{fmtUSD(remaining(p))}</div>
+    <div className="text-[11px] text-[#86868B] mt-1">Toplam {fmtUSD(p.usd_amount)}</div>
+    {unlinkedPaid(p) ? <div className="text-[10px] text-[#86868B] mt-1">Elle kapatıldı · Hareket bağlı değil</div>
+      : p.paid_usd > 0 && <div className="text-[11px] text-[#86868B]">{p.kind === "RECEIVABLE" ? "Tahsil edilen" : "Ödenen"} {fmtUSD(p.paid_usd)}</div>}
+  </>;
 
   return (
-    <Page
-      title="Ödemeler"
-      subtitle={`${summary.count} hareket · Tediye ${fmtUSD(summary.tediye)} · Tahsil ${fmtUSD(summary.tahsil)}`}
-      actions={
-        <InlineAddToggle
-          testId="btn-new-payment"
-          open={addOpen}
-          onToggle={() => (addOpen ? addPanelRef.current?.requestClose() : setAddOpen(true))}
-          label="Ödeme Ekle"
-          controls={ADD_PANEL_ID}
-        />
-      }
-    >
-      {/* Inline ekleme tablosu — başlık ile filtreler arasında açılır */}
-      <InlineAddTable
-        ref={addPanelRef}
-        id={ADD_PANEL_ID}
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        columns={addColumns}
-        rowTemplate={addRowTemplate}
-        onSave={saveNewRows}
-        onRowChange={onAddRowChange}
-        storageKey="marti:draft:payments"
-        onDraftRestored={() => setAddOpen(true)}
-        saveLabel="Ödemeleri Kaydet"
-        regionLabel="Yeni ödeme ekleme tablosu"
-        minTableWidth={1700}
-        testIdPrefix="payment-add"
-      />
-
-      <Card className="p-4 mb-4 flex gap-3 items-center flex-wrap">
-        <div className="relative flex-1 min-w-[240px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#86868B]"/>
-          <Input data-testid="input-search" placeholder="Açıklama, firma…" value={search} onChange={(e) => setSearch(e.target.value)} className="h-9 pl-9 bg-[#F5F5F7] border-0 rounded-lg"/>
-        </div>
-        <Select value={typeFilter} onValueChange={setTypeFilter}>
-          <SelectTrigger data-testid="filter-type" className="w-[160px] h-9 bg-[#F5F5F7] border-0 rounded-lg"><SelectValue/></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tüm tipler</SelectItem>
-            <SelectItem value="TEDİYE">Tediye (Ödeme)</SelectItem>
-            <SelectItem value="TAHSİL">Tahsil</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={bankFilter} onValueChange={setBankFilter}>
-          <SelectTrigger data-testid="filter-bank" className="w-[180px] h-9 bg-[#F5F5F7] border-0 rounded-lg"><SelectValue/></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tüm hesaplar</SelectItem>
-            {masters.banks.map(b => <SelectItem key={b.id} value={b.name}>{b.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-      </Card>
-
-      <Card className="overflow-hidden">
-        {loading ? (
-          <div className="p-6 space-y-3">{[...Array(6)].map((_, i) => <div key={i} className="skeleton h-10 w-full"/>)}</div>
-        ) : items.length === 0 ? (
-          <EmptyState
-            icon={CreditCard}
-            title="Henüz hareket yok"
-            message="Tediye veya tahsil hareketi ekleyebilirsiniz."
-            action={<Button onClick={() => setAddOpen(true)} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg gap-1.5"><Plus className="w-4 h-4"/>Yeni Ekle</Button>}
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-[#FAFAFA] border-b border-[#E5E5EA]">
-                <tr className="text-left">
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">Tarih</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">Tip</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">Firma / Açıklama</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">Şirket</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">Hesap</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold text-right">Tutar</th>
-                  <th className="px-4 py-3 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold text-right">USD</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((p) => (
-                  <tr key={p.id} data-testid={`row-payment-${p.id}`} onClick={() => openEdit(p)} className="border-b border-[#F5F5F7] hover:bg-[#FAFAFA] cursor-pointer transition">
-                    <td className="px-4 py-3 tabular-nums">{fmtDate(p.date)}</td>
-                    <td className="px-4 py-3"><StatusBadge value={p.type}/></td>
-                    <td className="px-4 py-3 text-[#1D1D1F] max-w-xs">
-                      <div className="font-medium truncate">{p.vendor || "—"}</div>
-                      <div className="text-xs text-[#86868B] truncate">{p.description || ""}</div>
-                    </td>
-                    <td className="px-4 py-3 text-[#3A3A3C]">{p.paying_company || "—"}</td>
-                    <td className="px-4 py-3 text-[#3A3A3C] text-xs">{p.payment_method || "—"}</td>
-                    <td className="px-4 py-3 text-right tabular-nums">{p.amount?.toLocaleString("tr-TR")} <span className="text-[#86868B]">{p.currency}</span></td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium">{fmtUSD(p.usd_amount)}</td>
-                    <td className="px-4 py-3 text-right">
-                      <button data-testid={`btn-delete-${p.id}`} onClick={(e) => { e.stopPropagation(); remove(p.id); }} className="p-1.5 rounded-md hover:bg-[#FFEBEA] text-[#86868B] hover:text-[#D92D20] transition">
-                        <Trash2 className="w-4 h-4"/>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <Page title="Ödeme ve Tahsilat" subtitle="Borçlarını öde, alacaklarını tahsil et.">
+      <Card className="overflow-hidden mb-6" data-testid="payable-register">
+        <div className="p-4 sm:p-5 border-b border-[#E5E5EA] space-y-4">
+          <div className="inline-flex rounded-xl bg-[#F5F5F7] p-1 gap-1" role="group" aria-label="İşlem seçimi">
+            {[{ key: "PAYABLE", label: "Borç → Ödeme", Icon: ArrowUpRight }, { key: "RECEIVABLE", label: "Alacak → Tahsilat", Icon: ArrowDownLeft }].map(({ key, label, Icon }) => (
+              <button key={key} data-testid={`tab-${key}`} aria-pressed={kind === key} onClick={() => setKind(key)} className={`flex items-center gap-2 px-3 sm:px-4 py-2.5 rounded-lg text-xs sm:text-sm font-medium transition ${kind === key ? "bg-white text-[#1D1D1F] shadow-sm" : "text-[#86868B] hover:text-[#1D1D1F]"}`}>
+                <Icon className="w-4 h-4 shrink-0" />{label}<span className="text-[10px] text-[#86868B]">{privateValue(payables.filter((p) => p.kind === key).length)}</span>
+              </button>
+            ))}
           </div>
-        )}
+          <div className="flex gap-3 flex-wrap">
+            <div className="relative flex-1 min-w-[180px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#86868B]" /><Input aria-label="Borç ve alacak ara" data-testid="register-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Firma, gemi veya açıklama ara…" className="pl-9 bg-[#F5F5F7] border-0 rounded-lg" /></div>
+            <Select value={status} onValueChange={setStatus}><SelectTrigger aria-label="Kayıt durumu" className="w-40 bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Tüm durumlar</SelectItem><SelectItem value="open">Açık kayıtlar</SelectItem><SelectItem value="closed">Kapanan kayıtlar</SelectItem></SelectContent></Select>
+          </div>
+        </div>
+        {error ? <div role="alert" className="p-6 text-sm text-[#D92D20]">{error}<Button variant="outline" onClick={load} className="ml-3">Tekrar Dene</Button></div>
+          : loading ? <div className="p-6 space-y-3">{[1, 2, 3].map((i) => <div key={i} className="skeleton h-12" />)}</div>
+          : !visible.length ? <EmptyState icon={CreditCard} title="Gösterilecek kayıt yok" message={query || status !== "all" ? "Aramayı veya durum filtresini değiştirebilirsiniz." : `${kind === "PAYABLE" ? "Borçlar" : "Alacaklar"} bölümünden eklediğiniz kayıtlar burada görünür.`} />
+          : <>
+            <div className="hidden lg:block overflow-x-auto"><table className="w-full text-sm"><thead className="bg-[#FAFAFA]"><tr className="text-left text-[11px] uppercase tracking-wider text-[#86868B]"><th className="px-5 py-3 font-semibold">Firma / Gemi</th><th className="px-5 py-3 font-semibold">Vade</th><th className="px-5 py-3 font-semibold text-right">Kalan USD</th><th className="px-5 py-3 font-semibold">Durum</th><th className="px-5 py-3 font-semibold text-right">İşlem</th></tr></thead>
+              <tbody>{visible.map((p) => <tr key={p.id} data-testid={`register-row-${p.id}`} className="border-t border-[#F5F5F7]"><td className="px-5 py-4 max-w-xs"><div className="font-medium truncate">{p.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B] mt-1">{[p.ship, p.description].filter(Boolean).join(" · ") || "—"}</div></td><td className="px-5 py-4 whitespace-nowrap text-[#636366]">{fmtDate(p.due_date)}</td><td className="px-5 py-4 text-right">{amountDetails(p)}</td><td className="px-5 py-4"><StatusBadge value={p.status} /></td><td className="px-5 py-4 text-right whitespace-nowrap">{recordAction(p)}</td></tr>)}</tbody>
+            </table></div>
+            <div className="lg:hidden divide-y divide-[#F5F5F7]">{visible.map((p) => <div key={p.id} className="p-4 sm:p-5 space-y-4" data-testid={`register-card-${p.id}`}><div className="flex justify-between gap-4"><div className="min-w-0"><div className="text-sm font-medium break-words">{p.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B] mt-1">{[p.ship, p.description].filter(Boolean).join(" · ")}</div><div className="text-xs text-[#86868B] mt-2">Vade {fmtDate(p.due_date)}</div></div><div className="text-right shrink-0"><div className="text-[10px] text-[#86868B] mb-1">KALAN USD</div>{amountDetails(p)}</div></div><div className="flex items-center justify-between gap-3"><StatusBadge value={p.status} />{recordAction(p)}</div></div>)}</div>
+          </>}
       </Card>
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="w-full sm:max-w-xl overflow-y-auto rounded-l-3xl">
-          <SheetHeader>
-            <SheetTitle>{editing?.id ? "Hareketi Düzenle" : "Yeni Hareket"}</SheetTitle>
-            <SheetDescription>Tediye (ödeme) veya Tahsil hareketini kaydedin.</SheetDescription>
-          </SheetHeader>
-          {editing && (
-            <div className="mt-6 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <FieldL label="Tip *"><SelectF value={editing.type} onChange={(v) => setEditing({...editing, type: v})} options={["TEDİYE", "TAHSİL"]}/></FieldL>
-                <FieldL label="Tarih *"><Input type="date" value={editing.date?.slice(0,10) || ""} onChange={(e) => setEditing({...editing, date: e.target.value})}/></FieldL>
-              </div>
-              <FieldL label="Firma">
-                <SelectF value={editing.vendor} onChange={(v) => setEditing({...editing, vendor: v})} options={masters.vendors.map(v => v.name)}/>
-              </FieldL>
-              <FieldL label="Açıklama">
-                <Textarea value={editing.description || ""} onChange={(e) => setEditing({...editing, description: e.target.value})} rows={2} className="bg-[#F5F5F7] border-0 rounded-lg"/>
-              </FieldL>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <FieldL label="Şirket"><SelectF value={editing.paying_company} onChange={(v) => setEditing({...editing, paying_company: v})} options={masters.companies.map(c => c.name)}/></FieldL>
-                <FieldL label="Hesap / Banka"><SelectF value={editing.payment_method} onChange={(v) => setEditing({...editing, payment_method: v})} options={masters.banks.map(b => b.name)}/></FieldL>
-              </div>
-              <FieldL label="Gemi / Birim"><SelectF value={editing.ship} onChange={(v) => setEditing({...editing, ship: v})} options={masters.ships.map(s => s.name)}/></FieldL>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <FieldL label="Tutar *"><Input type="number" step="0.01" value={editing.amount || ""} onChange={(e) => setEditing({...editing, amount: parseFloat(e.target.value) || 0})}/></FieldL>
-                <FieldL label="Döviz"><SelectF value={editing.currency} onChange={(v) => setEditing({...editing, currency: v})} options={masters.currencies.map(c => c.code)}/></FieldL>
-                <FieldL label="Kur"><Input type="number" step="0.0001" value={editing.fx_rate || ""} onChange={(e) => setEditing({...editing, fx_rate: parseFloat(e.target.value) || 0})}/></FieldL>
-              </div>
-              <FieldL label="USD Karşılığı"><Input type="number" step="0.01" value={editing.usd_amount || ""} onChange={(e) => setEditing({...editing, usd_amount: parseFloat(e.target.value) || 0})}/></FieldL>
-              <div className="flex gap-2 pt-4 border-t border-[#E5E5EA]">
-                <Button data-testid="btn-save-payment" onClick={save} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg flex-1">{editing.id ? "Güncelle" : "Kaydet"}</Button>
-                <Button variant="outline" onClick={() => setOpen(false)} className="rounded-lg">İptal</Button>
-              </div>
-            </div>
-          )}
+      <details className="group bg-white rounded-2xl border border-[#E5E5EA]" data-testid="payment-history">
+        <summary className="list-none cursor-pointer p-4 sm:p-5 flex items-center justify-between gap-3"><div><span className="text-sm font-medium">İşlem geçmişi</span><span className="ml-2 text-xs text-[#86868B]">{privateValue(items.length)} hareket</span></div><ChevronDown className="w-4 h-4 text-[#86868B] transition-transform group-open:rotate-180" /></summary>
+        <div className="px-4 pb-4 sm:px-5 sm:pb-5 border-t border-[#F5F5F7]">
+          <div className="flex flex-wrap gap-3 mt-4 mb-4"><Input aria-label="İşlem geçmişinde ara" value={historyQuery} onChange={(e) => setHistoryQuery(e.target.value)} placeholder="Firma, hesap veya açıklama ara…" className="bg-[#F5F5F7] border-0 rounded-lg flex-1 min-w-[180px]" /><Button variant="outline" size="sm" onClick={startIndependent} className="h-9 rounded-lg gap-1"><Plus className="w-3.5 h-3.5" />Bağımsız işlem ekle</Button></div>
+          {!movements.length ? <p className="py-6 text-center text-sm text-[#86868B]">Gösterilecek hareket yok.</p> : <div className="divide-y divide-[#F5F5F7]">{movements.map((p) => <div key={p.id} className="flex items-center gap-3 py-3"><button onClick={() => setEditing({ ...p })} data-testid={`row-payment-${p.id}`} className="flex-1 min-w-0 text-left flex justify-between gap-3 rounded-lg hover:bg-[#FAFAFA] p-2"><div className="min-w-0"><div className="text-xs font-medium mb-1" style={{ color: p.type === "TAHSİL" ? "#1F8942" : "#D92D20" }}>{p.type === "TAHSİL" ? "Tahsilat" : "Ödeme"}</div><div className="text-sm truncate">{p.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B] mt-1">{fmtDate(p.date)}{p.payment_method ? ` · ${p.payment_method}` : ""}</div></div><div className="shrink-0 text-right"><div className="text-sm font-semibold">{fmtUSD(p.usd_amount)}</div><div className="text-[10px] text-[#86868B] mt-1">{p.payable_id ? "Kayda bağlı" : "Bağımsız"}</div></div></button><button aria-label="Hareketi sil" onClick={() => remove(p)} className="p-2 text-[#86868B] hover:text-[#D92D20]"><Trash2 className="w-4 h-4" /></button></div>)}</div>}
+        </div>
+      </details>
+
+      <Sheet open={!!editing} onOpenChange={(value) => { if (!value && !saving) setEditing(null); }}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto rounded-l-3xl">
+          <SheetHeader><SheetTitle>{editing?.id ? (isReceipt ? "Tahsilatı Düzenle" : "Ödemeyi Düzenle") : isReceipt ? "Tahsilat Kaydet" : "Ödeme Kaydet"}</SheetTitle><SheetDescription>{linked ? (isReceipt ? "Seçilen alacağa tahsilat kaydedilecek." : "Seçilen borca ödeme kaydedilecek.") : "Bir borç veya alacak seçerek hareketi bağlayabilirsiniz."}</SheetDescription></SheetHeader>
+          {editing && <div className="mt-6 space-y-5">
+            {linked && <div className="p-4 rounded-xl bg-[#F5F5F7] space-y-2"><div className="text-[11px] font-semibold text-[#86868B]">{isReceipt ? "ALACAK → TAHSİLAT" : "BORÇ → ÖDEME"}</div><div className="text-sm font-medium">{linked.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B]">{linked.ship || "—"} · Vade {fmtDate(linked.due_date)}</div><div className="text-sm">{unlinkedPaid(linked) ? "Hareketle eşleşmeyen tutar" : "Kalan"}: <strong>{fmtUSD(linked.remaining_usd ?? linked.usd_amount)}</strong></div></div>}
+            {(!linked || editing.id) && <>
+              <Field label="İlgili borç / alacak"><Select value={editing.payable_id || "independent"} onValueChange={(id) => { const p = payables.find((row) => row.id === id); setEditing(p ? { ...editing, ...linkFields(p) } : { ...editing, payable_id: null }); }}><SelectTrigger aria-label="İlgili borç / alacak" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="independent">Bağımsız işlem</SelectItem>{payables.filter((p) => p.id === editing.payable_id || canSettle(p)).map((p) => <SelectItem key={p.id} value={p.id}>{p.kind === "RECEIVABLE" ? "Alacak" : "Borç"} · {p.vendor || "—"} · {fmtDate(p.due_date)} · {fmtUSD(p.remaining_usd ?? p.usd_amount)}</SelectItem>)}</SelectContent></Select></Field>
+              {!linked && <><Field label="İşlem"><Select value={editing.type} onValueChange={(type) => setEditing({ ...editing, type })}><SelectTrigger aria-label="İşlem türü" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="TEDİYE">Ödeme</SelectItem><SelectItem value="TAHSİL">Tahsilat</SelectItem></SelectContent></Select></Field><Field label="Firma"><Choice value={editing.vendor} onChange={(vendor) => setEditing({ ...editing, vendor })} options={masters.vendors.map((p) => p.name)} /></Field></>}
+            </>}
+            <div className="grid grid-cols-2 gap-3"><Field label={isReceipt ? "Tahsilat tutarı *" : "Ödeme tutarı *"}><Input aria-label="İşlem tutarı" type="number" step="0.01" min="0.01" value={editing.amount ?? ""} onChange={(e) => changeAmount({ amount: e.target.value === "" ? "" : Number(e.target.value) })} /></Field><Field label="Para birimi"><Choice value={editing.currency} onChange={(currency) => changeAmount({ currency, fx_rate: fxRateOf(currency) })} options={[...new Set(["USD", ...masters.currencies.map((c) => c.code)])]} /></Field></div>
+            <Field label="Tarih *"><Input aria-label="İşlem tarihi" type="date" value={editing.date?.slice(0, 10) || ""} onChange={(e) => setEditing({ ...editing, date: e.target.value })} /></Field>
+            <Field label="Hesap / Banka"><Choice value={editing.payment_method} onChange={(payment_method) => setEditing({ ...editing, payment_method })} options={masters.banks.map((b) => b.name)} /></Field>
+            {editing.currency !== "USD" && <div className="grid grid-cols-2 gap-3"><Field label="TL kuru"><Input type="number" step="0.0001" value={editing.fx_rate ?? ""} onChange={(e) => changeAmount({ fx_rate: Number(e.target.value) })} /></Field><Field label="USD karşılığı"><Input type="number" step="0.01" value={editing.usd_amount ?? ""} onChange={(e) => setEditing({ ...editing, usd_amount: Number(e.target.value) })} /></Field></div>}
+            <details className="border-t border-[#E5E5EA] pt-4"><summary className="text-xs text-[#636366] cursor-pointer">Ek bilgiler</summary><div className="mt-4 space-y-4"><Field label="Şirket"><Choice value={editing.paying_company} onChange={(paying_company) => setEditing({ ...editing, paying_company })} options={masters.companies.map((c) => c.name)} /></Field>{!linked && <Field label="Gemi / Birim"><Choice value={editing.ship} onChange={(ship) => setEditing({ ...editing, ship })} options={masters.ships.map((s) => s.name)} /></Field>}<Field label="Açıklama"><Textarea value={editing.description || ""} onChange={(e) => setEditing({ ...editing, description: e.target.value })} className="bg-[#F5F5F7] border-0 rounded-lg" rows={2} /></Field></div></details>
+            <div className="flex gap-2 border-t border-[#E5E5EA] pt-4"><Button disabled={saving} data-testid="btn-save-payment" onClick={save} className="flex-1 bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg">{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{editing.id ? "Değişiklikleri Kaydet" : isReceipt ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet"}</Button><Button disabled={saving} variant="outline" onClick={() => setEditing(null)} className="rounded-lg">Vazgeç</Button></div>
+          </div>}
         </SheetContent>
       </Sheet>
     </Page>
   );
 }
 
-const FieldL = ({ label, children }) => (
-  <div className="space-y-1.5">
-    <Label className="text-[11px] font-semibold uppercase tracking-wider text-[#86868B]">{label}</Label>
-    {children}
-  </div>
-);
-const SelectF = ({ value, onChange, options }) => (
-  <Select value={value || ""} onValueChange={onChange}>
-    <SelectTrigger className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue placeholder="Seçin"/></SelectTrigger>
-    <SelectContent className="max-h-80">
-      {options.filter(Boolean).map((o, i) => <SelectItem key={i} value={o}>{o}</SelectItem>)}
-    </SelectContent>
-  </Select>
-);
+const Field = ({ label, children }) => <div className="space-y-1.5"><Label className="text-xs text-[#636366]">{label}</Label>{children}</div>;
+const Choice = ({ value, onChange, options }) => <Select value={value || ""} onValueChange={onChange}><SelectTrigger className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue placeholder="Seçin" /></SelectTrigger><SelectContent className="max-h-72">{[...new Set([value, ...options].filter(Boolean))].map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select>;

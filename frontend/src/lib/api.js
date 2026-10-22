@@ -1,3 +1,4 @@
+import { HIDE_NUMBERS, HIDDEN_VALUE } from "./privacy";
 import axios from "axios";
 
 // Akıllı Backend URL tespiti:
@@ -61,11 +62,11 @@ export const formatApiError = (e) => {
   return JSON.stringify(d);
 };
 
-export const fmtUSD = (n) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+export const fmtUSD = (n, signed = false) =>
+  HIDE_NUMBERS ? HIDDEN_VALUE : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0, signDisplay: signed ? "exceptZero" : "auto" }).format(n || 0);
 
 export const fmtNum = (n, digits = 2) =>
-  new Intl.NumberFormat("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n || 0);
+  HIDE_NUMBERS ? HIDDEN_VALUE : new Intl.NumberFormat("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n || 0);
 
 export const fmtDate = (s) => {
   if (!s) return "—";

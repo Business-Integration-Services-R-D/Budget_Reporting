@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from database import db
+from settlements import OPEN_AMOUNT
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -14,8 +15,8 @@ async def report_by_ship(user: dict = Depends(get_current_user)):
         {"$group": {
             "_id": "$ship",
             "total_debt": {"$sum": "$usd_amount"},
-            "paid": {"$sum": {"$cond": [{"$eq": ["$status", "ÖDENDİ"]}, "$usd_amount", 0]}},
-            "open": {"$sum": {"$cond": [{"$in": ["$status", ["ÖDENDİ", "İPTAL"]]}, 0, "$usd_amount"]}},
+            "paid": {"$sum": {"$cond": [{"$eq": ["$status", "ÖDENDİ"]}, "$usd_amount", {"$ifNull": ["$paid_usd", 0]}]}},
+            "open": {"$sum": {"$cond": [{"$in": ["$status", ["ÖDENDİ", "İPTAL"]]}, 0, OPEN_AMOUNT]}},
             "count": {"$sum": 1}
         }},
         {"$sort": {"total_debt": -1}}
@@ -37,7 +38,7 @@ async def report_aging(user: dict = Depends(get_current_user)):
         except Exception:
             continue
         days = (today - due).days
-        amt = float(p.get("usd_amount", 0) or 0)
+        amt = float(p.get("remaining_usd", p.get("usd_amount", 0)) or 0)
         if days <= 30: buckets["0-30"] += amt; counts["0-30"] += 1
         elif days <= 60: buckets["31-60"] += amt; counts["31-60"] += 1
         elif days <= 90: buckets["61-90"] += amt; counts["61-90"] += 1
@@ -53,7 +54,7 @@ async def report_monthly(months: int = 12, user: dict = Depends(get_current_user
         {"$match": {"_d": {"$ne": None}}},
         {"$group": {
             "_id": {"y": {"$year": "$_d"}, "m": {"$month": "$_d"}},
-            "total": {"$sum": "$usd_amount"},
+            "total": {"$sum": OPEN_AMOUNT},
             "count": {"$sum": 1}
         }},
         {"$sort": {"_id.y": 1, "_id.m": 1}}

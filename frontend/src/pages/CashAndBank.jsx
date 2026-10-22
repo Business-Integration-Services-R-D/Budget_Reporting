@@ -1,3 +1,4 @@
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, fmtUSD, fmtDate } from "@/lib/api";
@@ -25,7 +26,7 @@ export default function CashAndBank() {
   };
 
   return (
-    <Page title="Kasa & Banka" subtitle={`${banks.length} hesap`}>
+    <Page title="Kasa & Banka" subtitle={`${privateValue(banks.length)} hesap`}>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-1 overflow-hidden">
           <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50">
@@ -65,7 +66,7 @@ export default function CashAndBank() {
               <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <h3 className="text-base font-medium text-[#1D1D1F]">{selected.name}</h3>
-                  <p className="text-xs text-[#86868B] mt-0.5">{tx.length} hareket</p>
+                  <p className="text-xs text-[#86868B] mt-0.5">{privateValue(tx.length)} hareket</p>
                 </div>
                 <div className="flex gap-4 sm:gap-6 text-right">
                   <div>
@@ -102,7 +103,7 @@ export default function CashAndBank() {
                           <div className="font-medium truncate max-w-md">{t.vendor || t.description || "—"}</div>
                           <div className="text-xs text-[#86868B]">{t.ship || ""}</div>
                         </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">{t.amount?.toLocaleString("tr-TR")} <span className="text-[#86868B]">{t.currency}</span></td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{privateValue(t.amount?.toLocaleString("tr-TR"))} <span className="text-[#86868B]">{t.currency}</span></td>
                         <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtUSD(t.usd_amount)}</td>
                       </tr>
                     ))}

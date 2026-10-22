@@ -1,3 +1,4 @@
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
@@ -126,7 +127,7 @@ export default function Settings() {
             </Card>
             <Card className="p-4">
               <div className="text-xs text-[#86868B] uppercase tracking-wider font-semibold mb-2">Kur (TCMB)</div>
-              <div className="text-sm text-[#1D1D1F]">{fxStatus?.count || 0} para birimi · Canlı</div>
+              <div className="text-sm text-[#1D1D1F]">{privateValue(fxStatus?.count || 0)} para birimi · Canlı</div>
               <div className="mt-1 text-[10px] text-[#86868B]">Her gün 15:30 otomatik güncellenir</div>
               <Button data-testid="btn-refresh-fx" onClick={refreshFx} disabled={fxRefreshing} className="mt-3 h-8 px-3 text-xs rounded-md gap-1.5 bg-[#111111] hover:bg-[#2C2C2E] text-white">
                 {fxRefreshing ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <RefreshCw className="w-3.5 h-3.5"/>}

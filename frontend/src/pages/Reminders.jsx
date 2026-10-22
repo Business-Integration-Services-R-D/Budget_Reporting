@@ -1,3 +1,4 @@
+import { privateValue, privateText } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
@@ -44,7 +45,7 @@ export default function Reminders() {
   return (
     <Page
       title="Hatırlatmalar & Bildirimler"
-      subtitle={`${items.filter(i => !i.read).length} okunmamış · ${items.length} toplam`}
+      subtitle={`${privateValue(items.filter(i => !i.read).length)} okunmamış · ${privateValue(items.length)} toplam`}
       actions={
         <div className="flex flex-wrap gap-2">
           <Button data-testid="btn-check-due" onClick={runCheck} disabled={running} variant="outline" className="rounded-lg gap-1.5 text-xs sm:text-sm">
@@ -80,8 +81,8 @@ export default function Reminders() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-[#1D1D1F]">{n.title}</div>
-                      <div className="text-xs text-[#86868B] mt-0.5">{n.message}</div>
+                      <div className="text-sm font-medium text-[#1D1D1F]">{privateText(n.title)}</div>
+                      <div className="text-xs text-[#86868B] mt-0.5">{privateText(n.message)}</div>
                     </div>
                     <div className="text-[10px] text-[#86868B] whitespace-nowrap">{fmtDate(n.created_at)}</div>
                   </div>

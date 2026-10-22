@@ -1,8 +1,10 @@
+import { PrivateChart as ResponsiveContainer } from "@/components/PrivateChart";
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { api, fmtUSD } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
 import { FileBarChart2, Ship, Users, Calendar, DollarSign, Layers, Building2, Clock } from "lucide-react";
-import { BarChart, Bar, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie, Legend } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, PieChart, Pie, Legend } from "recharts";
 
 const REPORTS = [
   { id: "by-ship-detail", label: "Gemi Bazlı Borç", icon: Ship, desc: "Toplam · Ödenen · Açık" },
@@ -111,7 +113,7 @@ const ReportRenderer = ({ report, data }) => {
                 <td className="px-4 py-2 text-right tabular-nums">{fmtUSD(r.total_debt)}</td>
                 <td className="px-4 py-2 text-right tabular-nums text-[#1F8942]">{fmtUSD(r.paid)}</td>
                 <td className="px-4 py-2 text-right tabular-nums text-[#D92D20]">{fmtUSD(r.open)}</td>
-                <td className="px-4 py-2 text-right tabular-nums">{r.count}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{privateValue(r.count)}</td>
               </tr>
             ))}
           </tbody>
@@ -141,7 +143,7 @@ const ReportRenderer = ({ report, data }) => {
               </div>
               <div className="text-right">
                 <div className="text-sm font-semibold tabular-nums">{fmtUSD(r.total)}</div>
-                <div className="text-[10px] text-[#86868B]">{r.count} kayıt</div>
+                <div className="text-[10px] text-[#86868B]">{privateValue(r.count)} kayıt</div>
               </div>
             </div>
           ))}
@@ -181,7 +183,7 @@ const ReportRenderer = ({ report, data }) => {
               <td className="px-4 py-2 text-[#86868B]">{i + 1}</td>
               <td className="px-4 py-2 font-medium">{r.vendor}</td>
               <td className="px-4 py-2 text-right tabular-nums font-medium">{fmtUSD(r.total)}</td>
-              <td className="px-4 py-2 text-right tabular-nums text-[#86868B]">{r.count}</td>
+              <td className="px-4 py-2 text-right tabular-nums text-[#86868B]">{privateValue(r.count)}</td>
             </tr>
           ))}
         </tbody>
@@ -204,9 +206,9 @@ const ReportRenderer = ({ report, data }) => {
           {data.map((r, i) => (
             <tr key={i} className="border-b border-[#F5F5F7]">
               <td className="px-4 py-2 font-medium">{r.currency}</td>
-              <td className="px-4 py-2 text-right tabular-nums text-[#D92D20]">{r.borç?.toLocaleString("tr-TR", {maximumFractionDigits: 2})}</td>
-              <td className="px-4 py-2 text-right tabular-nums text-[#1F8942]">{r.alacak?.toLocaleString("tr-TR", {maximumFractionDigits: 2})}</td>
-              <td className="px-4 py-2 text-right tabular-nums font-medium">{(r.alacak - r.borç).toLocaleString("tr-TR", {maximumFractionDigits: 2})}</td>
+              <td className="px-4 py-2 text-right tabular-nums text-[#D92D20]">{privateValue(r.borç?.toLocaleString("tr-TR", {maximumFractionDigits: 2}))}</td>
+              <td className="px-4 py-2 text-right tabular-nums text-[#1F8942]">{privateValue(r.alacak?.toLocaleString("tr-TR", {maximumFractionDigits: 2}))}</td>
+              <td className="px-4 py-2 text-right tabular-nums font-medium">{privateValue((r.alacak - r.borç).toLocaleString("tr-TR", {maximumFractionDigits: 2}))}</td>
             </tr>
           ))}
         </tbody>

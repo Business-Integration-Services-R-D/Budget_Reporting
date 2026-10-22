@@ -210,7 +210,7 @@ async def seed_all(db):
             logger.info("Seed: %d döviz kuru", len(docs))
 
     # ---- Payments (Ödeme/Tahsilat hareketleri) ----
-    if await db.payments.count_documents({}) == 0:
+    if os.environ.get("SEED_TRANSACTIONS", "true").lower() != "false" and await db.payments.count_documents({}) == 0:
         docs = []
         for p in data.get("payments", []):
             try:
@@ -249,7 +249,7 @@ async def seed_all(db):
             logger.info("Seed: %d ödeme", len(docs))
 
     # ---- Payables (Borçlar) ----
-    if await db.payables.count_documents({}) == 0:
+    if os.environ.get("SEED_TRANSACTIONS", "true").lower() != "false" and await db.payables.count_documents({}) == 0:
         # Excel'deki status değerlerini sistemdekine map et
         STATUS_MAP = {
             "ÖDENMEDİ": "VADESİ GEÇTİ",

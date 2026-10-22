@@ -1,3 +1,4 @@
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtUSD, fmtDate, formatApiError } from "@/lib/api";
 import { Page, Card, StatusBadge, EmptyState } from "@/components/Primitives";
@@ -104,7 +105,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     { key: "original_amount", label: "Tutar", type: "money", required: true, width: 130 },
     { key: "currency", label: "Para Birimi", type: "select", searchable: false, width: 120, options: masters.currencies.map((c) => c.code) },
     { key: "usd_amount", label: "USD Karşılığı", type: "money", width: 130 },
-    { key: "status", label: "Durum", type: "select", searchable: false, width: 160, options: masters.statuses.map((s) => s.name) },
+    { key: "status", label: "Durum", type: "select", searchable: false, width: 160, options: masters.statuses.filter((s) => !["ÖDENDİ", "KISMİ ÖDEME"].includes(s.name)).map((s) => s.name) },
   ], [masters]);
 
   /** Vade tarihi en erken sipariş tarihi olabilir. */
@@ -162,7 +163,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
 
   const summary = useMemo(() => {
     const total = items.reduce((s, i) => s + (i.usd_amount || 0), 0);
-    const open = items.filter(i => !["ÖDENDİ", "İPTAL"].includes(i.status)).reduce((s, i) => s + (i.usd_amount || 0), 0);
+    const open = items.filter(i => !["ÖDENDİ", "İPTAL"].includes(i.status)).reduce((s, i) => s + (i.remaining_usd ?? i.usd_amount ?? 0), 0);
     return { total, open, count: items.length };
   }, [items]);
 
@@ -191,7 +192,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   return (
     <Page
       title={title}
-      subtitle={`${summary.count} kayıt · Açık: ${fmtUSD(summary.open)}`}
+      subtitle={`${privateValue(summary.count)} kayıt · Açık: ${fmtUSD(summary.open)}`}
       actions={
         <InlineAddToggle
           testId="btn-new-payable"
@@ -288,8 +289,8 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                     <td className="px-4 py-3 text-[#1D1D1F] max-w-xs truncate">{p.vendor || "—"}</td>
                     <td className="px-4 py-3 text-[#3A3A3C]">{p.ship || "—"}</td>
                     <td className="px-4 py-3 text-[#3A3A3C] text-xs">{p.expense_type || "—"}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-[#1D1D1F]">{p.original_amount?.toLocaleString("tr-TR")} <span className="text-[#86868B]">{p.currency}</span></td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium text-[#1D1D1F]">{fmtUSD(p.usd_amount)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-[#1D1D1F]">{privateValue(p.original_amount?.toLocaleString("tr-TR"))} <span className="text-[#86868B]">{p.currency}</span></td>
+                    <td className="px-4 py-3 text-right tabular-nums font-medium text-[#1D1D1F]">{fmtUSD(p.usd_amount)}{p.remaining_usd != null && <div className="text-xs font-normal text-[#86868B]">Kalan {fmtUSD(p.remaining_usd)}</div>}</td>
                     <td className="px-4 py-3"><StatusBadge value={p.status}/></td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -381,7 +382,8 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
               </div>
 
               <Field label="Durum">
-                <SelectField testid="select-status" value={editing.status} onChange={(v) => setEditing({...editing, status: v})} options={masters.statuses.map(s => s.name)}/>
+                {["ÖDENDİ", "KISMİ ÖDEME"].includes(editing.status) ? <StatusBadge value={editing.status} /> : <SelectField testid="select-status" value={editing.status} onChange={(v) => setEditing({...editing, status: v})} options={masters.statuses.filter(s => !["ÖDENDİ", "KISMİ ÖDEME"].includes(s.name)).map(s => s.name)}/>}
+                <p className="mt-1 text-xs text-[#86868B]">Ödendi ve Kısmi Ödeme durumları, Ödeme ve Tahsilat ekranındaki hareketlerle otomatik belirlenir.</p>
               </Field>
 
               {/* Dosya Ekleri (sadece edit modunda — id varsa) */}

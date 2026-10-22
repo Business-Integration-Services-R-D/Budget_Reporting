@@ -49,6 +49,8 @@ async def handle_create_payable(params: dict, user: dict, background, db) -> dic
             d = datetime.fromisoformat(doc["due_date"])
             doc["year"] = d.year; doc["month"] = d.month
         except Exception: pass
+    if doc.get("status") in {"ÖDENDİ", "KISMİ ÖDEME"}:
+        raise ValueError("Ödendi ve Kısmi Ödeme durumları yalnızca bağlı ödeme/tahsilat hareketleriyle belirlenir.")
     await db.payables.insert_one(doc)
     return {"created_id": doc["id"], "message": f"✅ Yeni borç oluşturuldu: {doc['vendor']} — {amount:,.2f} {currency} (vade: {doc.get('due_date', '-')})"}
 
@@ -80,22 +82,7 @@ async def handle_create_payment(params: dict, user: dict, background, db) -> dic
 
 
 async def handle_mark_payable_paid(params: dict, user: dict, background, db) -> dict:
-    target = None
-    if params.get("payable_id"):
-        target = await db.payables.find_one({"id": params["payable_id"]}, {"_id": 0})
-    elif params.get("search"):
-        target = await db.payables.find_one({
-            "kind": "PAYABLE",
-            "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
-            "$or": [
-                {"vendor": {"$regex": params["search"], "$options": "i"}},
-                {"description": {"$regex": params["search"], "$options": "i"}},
-            ]
-        }, {"_id": 0})
-    if not target:
-        raise ValueError("Borç bulunamadı")
-    await db.payables.update_one({"id": target["id"]}, {"$set": {"status": "ÖDENDİ", "updated_at": _now()}})
-    return {"created_id": target["id"], "message": f"✅ Borç ödendi olarak işaretlendi: {target.get('vendor')} — ${target.get('usd_amount', 0):,.2f}"}
+    raise ValueError("Ödendi durumu elle değiştirilemez. Ödeme ve Tahsilat ekranından borca bağlı ödeme kaydedin.")
 
 
 async def _build_payable_query(scope: str):
