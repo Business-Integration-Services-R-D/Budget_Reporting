@@ -38,8 +38,8 @@ def _header_style(ws, row=1):
 
 def _auto_width(ws, max_w=50):
     """Sütun genişliklerini içeriğe göre otomatik ayarla."""
-    for col_cells in ws.columns:
-        col_letter = col_cells[0].column_letter
+    for column_index, col_cells in enumerate(ws.columns, start=1):
+        col_letter = get_column_letter(column_index)
         max_len = 10
         for c in col_cells[:200]:
             try:
@@ -79,14 +79,27 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None):
         rows = []
         for week in data["weeks"]:
             for p in week["rows"]:
+                category = p["budget_category"] if p["budget_category"] in {"BANKA", "OPERASYON", "DİĞER"} else "DİĞER"
                 rows.append([week["week"], week["start"], week["end"], p["date"], p["description"], p["vendor"],
-                    p["company_ship"], p["amount"], p["currency"], p["usd_amount"], p["budget_category"]])
-        return [("Ofis Ödemeleri", ["Hafta", "Başlangıç", "Bitiş", "Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "Döviz", "USD", "Bütçe Sınıfı"], rows)]
+                    p["company_ship"], p["amount"], p["currency"], p["usd_amount"],
+                    p["usd_amount"] if category == "BANKA" else 0,
+                    p["usd_amount"] if category == "OPERASYON" else 0,
+                    p["usd_amount"] if category == "DİĞER" else 0])
+            category_totals = {name: sum(r[10 + index] for r in rows if r[0] == week["week"]) for index, name in enumerate(("BANKA", "OPERASYON", "DİĞER"))}
+            rows.append([week["week"], week["start"], week["end"], None, "HAFTA TOPLAMI", None, None, None, None,
+                         week["total_usd"], category_totals["BANKA"], category_totals["OPERASYON"], category_totals["DİĞER"]])
+        return [("Ofis Ödemeleri", ["Hafta", "Başlangıç", "Bitiş", "Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "Döviz", "USD", "BANKA", "OPERASYON", "DİĞER"], rows)]
     if report_id == "all-debts":
         data = await reports.all_debts_data(months)
         headers = ["Grup", "Açıklama/Firma", "Gemi", "Borç Türü", "Vade", "Vadesi Geçmiş", "Toplam USD", *data["months"]]
-        rows = [[p["group"], p["description"], p["ship"], p["debt_type"], p["due_date"], p["overdue"], p["total"],
-                 *[p["monthly"].get(month, 0) for month in data["months"]]] for p in data["rows"]]
+        rows = []
+        for group in sorted({p["group"] for p in data["rows"]}):
+            grouped = [p for p in data["rows"] if p["group"] == group]
+            for p in grouped:
+                rows.append([p["group"], p["description"], p["ship"], p["debt_type"], p["due_date"], p["overdue"], p["total"],
+                             *[p["monthly"].get(month, 0) for month in data["months"]]])
+            rows.append([f"TOPLAM - {group}", None, None, None, None, sum(p["overdue"] for p in grouped), sum(p["total"] for p in grouped),
+                         *[sum(p["monthly"].get(month, 0) for p in grouped) for month in data["months"]]])
         return [("Tüm Borçlar", headers, rows)]
 
     if report_id == "by-ship-detail":
@@ -107,7 +120,7 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None):
     raise HTTPException(404, "Rapor bulunamadı.")
 
 
-def _report_xlsx(title, tables):
+def _report_xlsx(title, tables, report_id=None):
     wb = Workbook()
     wb.remove(wb.active)
     for sheet_title, headers, rows in tables:
@@ -116,8 +129,38 @@ def _report_xlsx(title, tables):
         _header_style(ws)
         for row in rows:
             ws.append(row)
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
+        ws.insert_rows(1, 3)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+        title_cell = ws.cell(1, 1, title if len(tables) == 1 else f"{title} · {sheet_title}")
+        title_cell.font = Font(bold=True, color="FFFFFF", size=16)
+        title_cell.fill = PatternFill("solid", fgColor="1F4E78")
+        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 28
+        ws.cell(2, 1, f"Oluşturulma: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+        ws.cell(2, 1).font = Font(italic=True, color="666666", size=9)
+        _header_style(ws, 4)
+        if report_id == "cash-report" and sheet_title == "Hareketler":
+            for row in range(5, ws.max_row + 1):
+                color = "E2F0D9" if ws.cell(row, 2).value == "TAHSİL" else "FCE4D6"
+                ws.cell(row, 2).fill = PatternFill("solid", fgColor=color)
+                ws.cell(row, 2).font = Font(bold=True, color="1F8942" if color == "E2F0D9" else "D92D20")
+        if report_id == "office-payments":
+            for column, color in zip(range(11, 14), ("D9EAF7", "E2F0D9", "FCE4D6")):
+                ws.cell(4, column).fill = PatternFill("solid", fgColor=color)
+                ws.cell(4, column).font = Font(bold=True, color="1D1D1F")
+            for row in range(5, ws.max_row + 1):
+                if ws.cell(row, 5).value == "HAFTA TOPLAMI":
+                    for cell in ws[row]:
+                        cell.fill = PatternFill("solid", fgColor="FFF2CC")
+                        cell.font = Font(bold=True)
+        if report_id == "all-debts":
+            for row in range(5, ws.max_row + 1):
+                if str(ws.cell(row, 1).value or "").startswith("TOPLAM -"):
+                    for cell in ws[row]:
+                        cell.fill = PatternFill("solid", fgColor="D9EAF7")
+                        cell.font = Font(bold=True)
+        ws.freeze_panes = "A5"
+        ws.auto_filter.ref = f"A4:{get_column_letter(ws.max_column)}{ws.max_row}"
         _auto_width(ws, 35)
     stream = io.BytesIO()
     wb.save(stream)
@@ -141,7 +184,7 @@ def _pdf_font():
     return name
 
 
-def _report_pdf(title, tables):
+def _report_pdf(title, tables, report_id=None):
     stream = io.BytesIO()
     page = landscape(A3) if any(len(headers) > 10 for _, headers, _ in tables) else landscape(A4)
     doc = SimpleDocTemplate(stream, pagesize=page, leftMargin=22, rightMargin=22, topMargin=24, bottomMargin=24)
@@ -184,6 +227,21 @@ def _report_pdf(title, tables):
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFA")]),
                 ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ]))
+            if report_id == "cash-report" and segment_title.startswith("Hareketler"):
+                for row_index, row in enumerate(segment_rows, start=1):
+                    table.setStyle(TableStyle([("BACKGROUND", (1, row_index), (1, row_index), colors.HexColor("#E2F0D9" if row[1] == "TAHSİL" else "#FCE4D6"))]))
+            if report_id == "office-payments":
+                for label, color in (("BANKA", "#D9EAF7"), ("OPERASYON", "#E2F0D9"), ("DİĞER", "#FCE4D6")):
+                    if label in segment_headers:
+                        column = segment_headers.index(label)
+                        table.setStyle(TableStyle([("BACKGROUND", (column, 0), (column, 0), colors.HexColor(color)), ("TEXTCOLOR", (column, 0), (column, 0), colors.black)]))
+                for row_index, row in enumerate(segment_rows, start=1):
+                    if len(row) > 4 and row[4] == "HAFTA TOPLAMI":
+                        table.setStyle(TableStyle([("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#FFF2CC")), ("FONTNAME", (0, row_index), (-1, row_index), font)]))
+            if report_id == "all-debts":
+                for row_index, row in enumerate(segment_rows, start=1):
+                    if str(row[0] or "").startswith("TOPLAM -"):
+                        table.setStyle(TableStyle([("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#D9EAF7"))]))
             story.append(table)
     doc.build(story)
     stream.seek(0)
@@ -320,7 +378,7 @@ async def export_report(report_id: str, format: str = "xlsx", start: str | None 
         raise HTTPException(400, "Format xlsx veya pdf olmalıdır.")
     tables = await _report_tables(report_id, start, end, months, user)
     title = REPORT_NAMES.get(report_id, report_id)
-    stream = _report_xlsx(title, tables) if format == "xlsx" else _report_pdf(title, tables)
+    stream = _report_xlsx(title, tables, report_id) if format == "xlsx" else _report_pdf(title, tables, report_id)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     filename = f"marti-{report_id}-{stamp}.{format}"
     await write_audit(user, "export", f"report-{format}", meta={"report": report_id, "filename": filename})

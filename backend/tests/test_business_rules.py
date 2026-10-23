@@ -189,7 +189,7 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cash['balances'][0]['current_balance'], 9600)
         cash_export = await self.api.get('/api/export/reports/cash-report?format=xlsx')
         workbook = load_workbook(io.BytesIO(cash_export.content), data_only=True)
-        self.assertEqual(workbook['Hareketler']['A2'].value, 1)
+        self.assertEqual(workbook['Hareketler']['A5'].value, 1)
         for fmt, content_type, signature in [('xlsx', 'spreadsheetml', b'PK'), ('pdf', 'application/pdf', b'%PDF')]:
             response = await self.api.get(f'/api/export/reports/office-payments?format={fmt}')
             self.assertEqual(response.status_code, 200, response.text)
