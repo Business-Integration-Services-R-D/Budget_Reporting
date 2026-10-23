@@ -9,7 +9,7 @@ router = APIRouter(prefix="/master", tags=["master"])
 MASTER_COLLECTIONS = {
     "companies", "armators", "managers", "ships", "people", "countries",
     "banks", "expense_types", "accounting_codes", "vendors", "currencies",
-    "payment_statuses", "payment_methods",
+    "payment_statuses", "payment_methods", "budget_categories",
 }
 
 

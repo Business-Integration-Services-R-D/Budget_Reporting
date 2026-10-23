@@ -32,7 +32,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   const [statusFilter, setStatusFilter] = useState("all");
   const [shipFilter, setShipFilter] = useState("all");
 
-  const [masters, setMasters] = useState({ ships: [], vendors: [], expense_types: [], currencies: [], statuses: [], armators: [], companies: [], people: [], countries: [] });
+  const [masters, setMasters] = useState({ ships: [], vendors: [], expense_types: [], budget_categories: [], currencies: [], statuses: [], armators: [], companies: [], people: [], countries: [] });
   const [fxRates, setFxRates] = useState([]);
   const addPanelRef = useRef(null);
 
@@ -56,14 +56,15 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
 
   useEffect(() => {
     (async () => {
-      const [ships, vendors, expTypes, currencies, statuses, armators, companies, people, countries, fx] = await Promise.all([
+      const [ships, vendors, expTypes, budgetCategories, currencies, statuses, armators, companies, people, countries, fx] = await Promise.all([
         api.get("/master/ships"), api.get("/master/vendors"), api.get("/master/expense_types"),
+        api.get("/master/budget_categories"),
         api.get("/master/currencies"), api.get("/master/payment_statuses"), api.get("/master/armators"),
         api.get("/master/companies"), api.get("/master/people"), api.get("/master/countries"),
         api.get("/fx/latest"),
       ]);
       setMasters({
-        ships: ships.data, vendors: vendors.data, expense_types: expTypes.data,
+        ships: ships.data, vendors: vendors.data, expense_types: expTypes.data, budget_categories: budgetCategories.data,
         currencies: currencies.data, statuses: statuses.data, armators: armators.data,
         companies: companies.data, people: people.data, countries: countries.data,
       });
@@ -88,6 +89,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     ship: "",
     armator: "",
     expense_type: "",
+    budget_category: "DİĞER",
     expense_code: "",
     country: "",
     description: "",
@@ -104,6 +106,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     { key: "ship", label: "Gemi / Birim", type: "select", width: 160, options: masters.ships.map((s) => s.name) },
     { key: "armator", label: "Armatör", type: "select", width: 160, options: masters.armators.map((a) => a.name) },
     { key: "expense_type", label: "Masraf Türü", type: "select", width: 170, options: masters.expense_types.map((e) => e.name) },
+    { key: "budget_category", label: "Bütçe Sınıfı", type: "select", width: 150, options: masters.budget_categories.map((e) => e.name) },
     { key: "country", label: "Ülke", type: "select", width: 150, options: masters.countries.map((c) => c.name) },
     { key: "description", label: "Açıklama", type: "text", placeholder: "Açıklama giriniz…", width: 200 },
     { key: "original_amount", label: "Tutar", type: "money", required: true, width: 130 },
@@ -144,6 +147,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
         ship: r.ship || null,
         armator: r.armator || null,
         expense_type: r.expense_type || null,
+        budget_category: r.budget_category || "DİĞER",
         expense_code: r.expense_code || null,
         country: r.country || null,
         description: r.description.trim() || null,
@@ -364,6 +368,9 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                     const item = masters.expense_types.find(e => e.name === v);
                     setEditing({...editing, expense_type: v, expense_code: item?.code});
                   }} options={masters.expense_types.map(e => e.name)}/>
+                </Field>
+                <Field label="Bütçe Sınıfı">
+                  <SelectField testid="select-budget-category" value={editing.budget_category || "DİĞER"} onChange={(v) => setEditing({...editing, budget_category: v})} options={masters.budget_categories.map(e => e.name)}/>
                 </Field>
                 <Field label="Ülke">
                   <SelectField testid="select-country" value={editing.country} onChange={(v) => setEditing({...editing, country: v})} options={masters.countries.map(c => c.name)}/>

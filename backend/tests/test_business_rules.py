@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import httpx
 import uuid
 import unittest
-from routers import accounts, dashboard, payments, payables, reports, master
+from routers import accounts, dashboard, payments, payables, reports, master, export
 import dependencies
 
 
@@ -14,11 +14,11 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.client = AsyncIOMotorClient('mongodb://127.0.0.1:27017', serverSelectionTimeoutMS=5000)
         self.db = self.client['budget_business_test_' + uuid.uuid4().hex]
-        self.patches = [patch.object(m, 'db', self.db) for m in (accounts, dashboard, payments, payables, reports, master, dependencies)]
+        self.patches = [patch.object(m, 'db', self.db) for m in (accounts, dashboard, payments, payables, reports, master, export, dependencies)]
         for p in self.patches: p.start()
         self.user = {'id': 'tester', 'email': 'tester@local.dev', 'role': 'admin'}
         self.app = FastAPI()
-        for m in (accounts, dashboard, payments, payables, reports, master): self.app.include_router(m.router, prefix='/api')
+        for m in (accounts, dashboard, payments, payables, reports, master, export): self.app.include_router(m.router, prefix='/api')
         self.app.dependency_overrides[dependencies.get_current_user] = lambda: self.user
         self.api = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://test')
         await self.db.banks.insert_one({'id': 'bank', 'name': 'Banka', 'currency': 'USD', 'balance': 10000})
@@ -172,6 +172,24 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kpi[window]['count'], 2)
         upcoming = (await self.api.get('/api/dashboard/upcoming?days=30')).json()
         self.assertEqual({row['kind'] for row in upcoming}, {'PAYABLE', 'RECEIVABLE'})
+
+    async def test_operational_reports_and_download_formats(self):
+        due = (datetime.now(timezone.utc).date() + timedelta(days=3)).isoformat()
+        debt = await self.debt(due_date=due, description='Liman ödemesi', budget_category='OPERASYON')
+        office = (await self.api.get('/api/reports/office-payments')).json()
+        self.assertEqual(office['weeks'][0]['rows'][0]['budget_category'], 'OPERASYON')
+        matrix = (await self.api.get('/api/reports/all-debts?months=3')).json()
+        self.assertEqual(matrix['rows'][0]['total'], 1000)
+        self.assertEqual(sum(matrix['rows'][0]['monthly'].values()), 1000)
+        await self.pay(debt, amount=400)
+        cash = (await self.api.get('/api/reports/cash-report')).json()
+        self.assertEqual(cash['movements'][0]['type'], 'TEDİYE')
+        self.assertEqual(cash['balances'][0]['current_balance'], 9600)
+        for fmt, content_type, signature in [('xlsx', 'spreadsheetml', b'PK'), ('pdf', 'application/pdf', b'%PDF')]:
+            response = await self.api.get(f'/api/export/reports/office-payments?format={fmt}')
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn(content_type, response.headers['content-type'])
+            self.assertTrue(response.content.startswith(signature))
 
     async def test_vendor_rename_keeps_old_and_new_transactions_together(self):
         p = await self.debt()

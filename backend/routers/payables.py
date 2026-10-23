@@ -17,6 +17,7 @@ class PayableInput(BaseModel):
     due_date: Optional[str] = None
     expense_code: Optional[str] = None
     expense_type: Optional[str] = None
+    budget_category: Optional[str] = None
     vendor: Optional[str] = None
     country: Optional[str] = None
     person_company: Optional[str] = None

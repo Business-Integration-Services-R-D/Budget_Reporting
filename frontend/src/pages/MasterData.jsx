@@ -20,6 +20,7 @@ const COLLECTIONS = [
   { key: "countries", label: "Ülkeler", fields: ["name", "code"] },
   { key: "banks", label: "Banka & Kasa", fields: ["name", "type", "currency", "iban", "balance", "company", "notes"] },
   { key: "expense_types", label: "Masraf Türleri", fields: ["code", "name", "notes"] },
+  { key: "budget_categories", label: "Bütçe Sınıfları", fields: ["name", "notes"] },
   { key: "accounting_codes", label: "Muhasebe Kodları", fields: ["code", "name", "notes"] },
   { key: "currencies", label: "Para Birimleri", fields: ["code", "name", "rate_to_tl"] },
   { key: "payment_statuses", label: "Ödeme Durumları", fields: ["name", "color", "order"] },

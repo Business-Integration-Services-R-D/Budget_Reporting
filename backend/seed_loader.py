@@ -19,7 +19,7 @@ CURRENT_SEED_VERSION = "marti-2026-05-30-v1"
 RESET_COLLECTIONS = [
     "companies", "armators", "managers", "ships", "people", "countries",
     "banks", "expense_types", "accounting_codes", "vendors", "currencies",
-    "payment_statuses", "payment_methods", "payables", "payments", "fx_rates",
+    "payment_statuses", "payment_methods", "budget_categories", "payables", "payments", "fx_rates",
     "notifications", "ai_sessions", "ai_messages", "ai_pending_actions", "uploads"
 ]
 # Korunan koleksiyonlar (asla silinmez): users, audit_logs, app_meta,
@@ -146,6 +146,13 @@ async def seed_all(db):
         if docs:
             await db.accounting_codes.insert_many(docs)
             logger.info("Seed: %d muhasebe kodu", len(docs))
+
+    # ---- Budget Categories (Günlük ofis ödemeleri rapor sınıfları) ----
+    if await db.budget_categories.count_documents({}) == 0:
+        defaults = ["BANKA", "OPERASYON", "DİĞER"]
+        docs = [{"id": _uid(), "name": name, "active": True, "created_at": _now()} for name in defaults]
+        await db.budget_categories.insert_many(docs)
+        logger.info("Seed: %d bütçe sınıfı", len(docs))
 
     # ---- Vendors ----
     if await db.vendors.count_documents({}) == 0:
