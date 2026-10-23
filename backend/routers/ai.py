@@ -5,6 +5,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from database import db
+from finance import OPEN, POSTED, APPROVED
+from settlements import OPEN_AMOUNT
 from dependencies import get_current_user, write_audit, _uid, _now
 from ai_service import chat_with_assistant
 from ai_actions import ACTION_HANDLERS, ALLOWED_ACTIONS
@@ -31,27 +33,27 @@ async def _build_assistant_context() -> dict:
     month = (today + timedelta(days=30)).isoformat()
 
     open_p = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
-        {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
+        {"$match": {**OPEN, "kind": "PAYABLE"}},
+        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     open_r = await db.payables.aggregate([
-        {"$match": {"kind": "RECEIVABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
-        {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
+        {"$match": {**OPEN, "kind": "RECEIVABLE"}},
+        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     overdue = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}, "due_date": {"$lt": today_iso}}},
-        {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
+        {"$match": {**OPEN, "kind": "PAYABLE", "due_date": {"$lt": today_iso}}},
+        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     week_due = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}, "due_date": {"$gte": today_iso, "$lte": week}}},
-        {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
+        {"$match": {**OPEN, "kind": "PAYABLE", "due_date": {"$gte": today_iso, "$lte": week}}},
+        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     month_due = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}, "due_date": {"$gte": today_iso, "$lte": month}}},
-        {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
+        {"$match": {**OPEN, "kind": "PAYABLE", "due_date": {"$gte": today_iso, "$lte": month}}},
+        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     paid_total = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
+        {"$match": {**POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
 
@@ -61,50 +63,51 @@ async def _build_assistant_context() -> dict:
         return {"total": 0, "count": 0}
 
     by_ship = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
-        {"$group": {"_id": "$ship", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
+        {"$match": {**OPEN, "kind": "PAYABLE"}},
+        {"$group": {"_id": "$ship", "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
     by_company = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
+        {"$match": {**POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$paying_company", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
     by_expense = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE"}},
+        {"$match": {**APPROVED, "kind": "PAYABLE"}},
         {"$group": {"_id": "$expense_type", "total": {"$sum": "$usd_amount"}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
     top_vendors = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
+        {"$match": {**POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$vendor", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
 
     aging_raw = await db.payables.find(
-        {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}, "due_date": {"$ne": None}},
-        {"_id": 0, "due_date": 1, "usd_amount": 1}
+        {**OPEN, "kind": "PAYABLE", "due_date": {"$ne": None}},
+        {"_id": 0, "due_date": 1, "usd_amount": 1, "remaining_usd": 1}
     ).to_list(5000)
-    buckets = {"0-30": [0, 0], "31-60": [0, 0], "61-90": [0, 0], "90+": [0, 0]}
+    buckets = {"Vadesi gelmemiş": [0, 0], "0-30": [0, 0], "31-60": [0, 0], "61-90": [0, 0], "90+": [0, 0]}
     for p in aging_raw:
         try: due = datetime.fromisoformat(p["due_date"]).date()
         except Exception: continue
         days = (today - due).days
-        amt = float(p.get("usd_amount", 0) or 0)
-        if days <= 30: buckets["0-30"][0] += amt; buckets["0-30"][1] += 1
+        amt = float(p.get("remaining_usd", p.get("usd_amount", 0)) or 0)
+        if days < 0: buckets["Vadesi gelmemiş"][0] += amt; buckets["Vadesi gelmemiş"][1] += 1
+        elif days <= 30: buckets["0-30"][0] += amt; buckets["0-30"][1] += 1
         elif days <= 60: buckets["31-60"][0] += amt; buckets["31-60"][1] += 1
         elif days <= 90: buckets["61-90"][0] += amt; buckets["61-90"][1] += 1
         else: buckets["90+"][0] += amt; buckets["90+"][1] += 1
 
     upcoming = await db.payables.find({
-        "kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+        **OPEN, "kind": "PAYABLE",
         "due_date": {"$gte": today_iso, "$lte": month}
     }, {"_id": 0}).sort("due_date", 1).to_list(20)
 
-    recent_payments = await db.payments.find({}, {"_id": 0}).sort("created_at", -1).to_list(25)
+    recent_payments = await db.payments.find(POSTED, {"_id": 0}).sort("created_at", -1).to_list(25)
 
     cashflow = await db.payments.aggregate([
-        {"$match": {"date": {"$ne": None}}},
+        {"$match": {**POSTED, "date": {"$ne": None}}},
         {"$addFields": {"_d": {"$dateFromString": {"dateString": "$date", "onError": None}}}},
         {"$match": {"_d": {"$ne": None}}},
         {"$group": {"_id": {"y": {"$year": "$_d"}, "m": {"$month": "$_d"}, "t": "$type"}, "total": {"$sum": "$usd_amount"}}},
@@ -119,13 +122,8 @@ async def _build_assistant_context() -> dict:
 
     fx_latest = await db.currencies.find({}, {"_id": 0}).to_list(20)
 
-    by_currency = await db.payables.aggregate([
-        {"$group": {
-            "_id": "$currency",
-            "borç": {"$sum": {"$cond": [{"$eq": ["$kind", "PAYABLE"]}, "$original_amount", 0]}},
-            "alacak": {"$sum": {"$cond": [{"$eq": ["$kind", "RECEIVABLE"]}, "$original_amount", 0]}}
-        }}
-    ]).to_list(20)
+    from routers.reports import report_currency_position as currency_report
+    by_currency = await currency_report({})
 
     return {
         "kpi": {
@@ -142,7 +140,7 @@ async def _build_assistant_context() -> dict:
         "recent_payments": recent_payments,
         "monthly_cashflow": monthly_cashflow,
         "fx_latest": fx_latest,
-        "by_currency": [{"currency": r["_id"], "borç": r["borç"], "alacak": r["alacak"]} for r in by_currency],
+        "by_currency": by_currency,
     }
 
 

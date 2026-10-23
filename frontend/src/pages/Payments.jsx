@@ -1,5 +1,6 @@
+import { useAuth } from "@/contexts/AuthContext";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, fmtUSD, fmtDate, formatApiError } from "@/lib/api";
+import { api, fmtUSD, fmtDate, fmtMoney, formatApiError } from "@/lib/api";
 import { privateValue } from "@/lib/privacy";
 import { Page, Card, StatusBadge, EmptyState } from "@/components/Primitives";
 import { Button } from "@/components/ui/button";
@@ -17,10 +18,13 @@ const localDate = () => {
 };
 const actionName = (kind) => kind === "RECEIVABLE" ? "Tahsil Et" : "Ödeme Yap";
 const remaining = (p) => ["ÖDENDİ", "İPTAL"].includes(p.status) ? 0 : (p.remaining_usd ?? p.usd_amount ?? 0);
-const canSettle = (p) => p.status !== "İPTAL" && (p.remaining_usd ?? p.usd_amount ?? 0) > 0;
+const originalRemaining = (p) => ["ÖDENDİ", "İPTAL"].includes(p.status) ? 0 : (p.remaining_amount ?? (p.remaining_usd != null && p.usd_amount > 0 ? (p.original_amount || p.usd_amount) * p.remaining_usd / p.usd_amount : p.original_amount ?? p.usd_amount ?? 0));
+const canSettle = (p) => !["TASLAK", "ONAY BEKLİYOR", "İPTAL"].includes(p.status) && !["draft", "pending"].includes(p.approval_status) && (p.remaining_usd ?? p.usd_amount ?? 0) > 0;
 const unlinkedPaid = (p) => p.status === "ÖDENDİ" && p.remaining_usd == null;
 
 export default function Payments() {
+  const { user } = useAuth();
+  const canWrite = ["admin", "manager", "accountant", "finance"].includes(user?.role);
   const [payables, setPayables] = useState([]);
   const [items, setItems] = useState([]);
   const [masters, setMasters] = useState({ banks: [], vendors: [], ships: [], companies: [], currencies: [] });
@@ -41,7 +45,7 @@ export default function Payments() {
       const [debts, receivables, movements] = await Promise.all([
         api.get("/payables?kind=PAYABLE&limit=5000"),
         api.get("/payables?kind=RECEIVABLE&limit=5000"),
-        api.get("/payments?limit=5000"),
+        api.get("/payments?limit=5000&include_voided=true"),
       ]);
       setPayables([...debts.data, ...receivables.data]);
       setItems(movements.data);
@@ -59,7 +63,7 @@ export default function Payments() {
           api.get("/master/companies"), api.get("/master/currencies"), api.get("/fx/latest"),
         ]);
         if (active) {
-          setMasters({ banks: banks.data, vendors: vendors.data, ships: ships.data, companies: companies.data, currencies: currencies.data });
+          setMasters({ banks: banks.data.filter((b) => b.active !== false), vendors: vendors.data.filter((v) => v.active !== false), ships: ships.data, companies: companies.data, currencies: currencies.data });
           setFxRates(fx.data);
         }
       } catch (e) { if (active) toast.error(formatApiError(e)); }
@@ -67,52 +71,64 @@ export default function Payments() {
     return () => { active = false; };
   }, []);
 
-  const fxRateOf = (code) => code === "TL" ? 1 : (fxRates.find((c) => c.code === code)?.rate_to_tl || 0);
+  const fxRateOf = (code) => ["TL", "TRY"].includes(code) ? 1 : (fxRates.find((c) => c.code === (code === "POUND" ? "GBP" : code))?.rate_to_tl || 0);
   const changeAmount = (patch) => {
     setEditing((previous) => {
       const next = { ...previous, ...patch };
-      next.usd_amount = next.currency === "USD" ? Number(next.amount || 0)
-        : Number(next.amount || 0) * Number(next.fx_rate || 0) / (fxRateOf("USD") || 1);
+      const usdRate = Number(next.usd_fx_rate || fxRateOf("USD"));
+      const converted = next.currency === "USD" ? Number(next.amount || 0)
+        : usdRate > 0 ? Number(next.amount || 0) * (next.currency === "TL" ? 1 : Number(next.fx_rate || 0)) / usdRate : 0;
+      next.usd_amount = Math.round((converted + Number.EPSILON) * 100) / 100;
+      if (next.currency === "TL") next.fx_rate = 1;
       return next;
     });
   };
   const linkFields = (p) => ({
     payable_id: p.id, type: p.kind === "RECEIVABLE" ? "TAHSİL" : "TEDİYE",
-    vendor: p.vendor || "", ship: p.ship || "",
+    vendor: p.vendor || "", vendor_id: p.vendor_id || null, ship: p.ship || "",
   });
   const startPayment = (p) => {
-    const amount = p.remaining_usd ?? p.usd_amount ?? 0;
+    const code = p.currency || "USD";
+    const amount = originalRemaining(p);
+    const localRate = fxRateOf(code);
+    const usdRate = fxRateOf("USD");
+    const converted = code === "USD" ? amount : usdRate > 0 ? amount * localRate / usdRate : 0;
     setEditing({ ...linkFields(p), date: localDate(), description: p.description || "",
-      currency: "USD", amount, usd_amount: amount, fx_rate: fxRateOf("USD"),
-      payment_method: "", paying_company: "" });
+      currency: code, amount, usd_amount: Math.round(converted * 100) / 100, fx_rate: localRate,
+      usd_fx_rate: usdRate, posting_status: "posted", approved: true,
+      payment_method: "", bank_account_id: null, paying_company: "" });
   };
+
   const startIndependent = () => setEditing({
     type: kind === "RECEIVABLE" ? "TAHSİL" : "TEDİYE", payable_id: null,
     date: localDate(), currency: "USD", amount: "", usd_amount: 0,
-    fx_rate: fxRateOf("USD"), vendor: "", ship: "", description: "", payment_method: "", paying_company: "",
+    fx_rate: fxRateOf("USD"), usd_fx_rate: fxRateOf("USD"), posting_status: "posted", approved: true, vendor: "", ship: "", description: "", payment_method: "", paying_company: "",
   });
   const linked = editing && payables.find((p) => p.id === editing.payable_id);
   const isReceipt = editing?.type === "TAHSİL";
 
-  const save = async () => {
+  const save = async (postingStatus = "posted") => {
     if (saving) return;
     if (!editing.date || !(Number(editing.amount) > 0) || !(Number(editing.usd_amount) > 0)) {
       toast.error("Tarih ve sıfırdan büyük bir tutar girin."); return;
     }
+    if (postingStatus === "posted" && !editing.payment_method && !editing.bank_account_id) {
+      toast.error("Gerçekleşen işlem için banka veya kasa seçin; hazır değilse taslak kaydedin."); return;
+    }
     setSaving(true);
     try {
-      const payload = { ...editing, payable_id: editing.payable_id || null };
+      const payload = { ...editing, payable_id: editing.payable_id || null, posting_status: postingStatus, approved: postingStatus === "posted" };
       if (payload.id) await api.put(`/payments/${payload.id}`, payload);
       else await api.post("/payments", payload);
-      toast.success(isReceipt ? "Tahsilat kaydedildi" : "Ödeme kaydedildi");
+      toast.success(postingStatus === "draft" ? "Taslak kaydedildi; nakit ve borç bakiyesi değişmedi" : isReceipt ? "Tahsilat kaydedildi" : "Ödeme kaydedildi");
       setEditing(null);
       await load();
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setSaving(false); }
   };
   const remove = async (p) => {
-    if (!window.confirm("Bu hareket silinsin mi? Bağlı kaydın kalan tutarı yeniden hesaplanır.")) return;
-    try { await api.delete(`/payments/${p.id}`); toast.success("Hareket silindi"); await load(); }
+    if (!window.confirm("Bu hareket iptal edilsin mi? Geçmişi saklanır; nakit ve bağlı kaydın kalan tutarı yeniden hesaplanır.")) return;
+    try { await api.delete(`/payments/${p.id}`); toast.success("Hareket iptal edildi"); await load(); }
     catch (e) { toast.error(formatApiError(e)); }
   };
 
@@ -127,16 +143,17 @@ export default function Payments() {
     p.type === "TAHSİL" ? "Tahsilat" : "Ödeme"].some((v) => String(v || "").toLocaleLowerCase("tr-TR").includes(historyQuery.toLocaleLowerCase("tr-TR"))));
 
   const recordAction = (p) => (
-    <Button size="sm" disabled={!canSettle(p)} data-testid={`register-pay-${p.id}`} onClick={() => startPayment(p)} className="rounded-lg bg-[#111111] hover:bg-[#2C2C2E] text-white gap-1.5">
+    <Button size="sm" disabled={!canWrite || !canSettle(p)} data-testid={`register-pay-${p.id}`} onClick={() => startPayment(p)} className="rounded-lg bg-[#111111] hover:bg-[#2C2C2E] text-white gap-1.5">
       {p.kind === "RECEIVABLE" ? <ArrowDownLeft className="w-3.5 h-3.5" /> : <ArrowUpRight className="w-3.5 h-3.5" />}
-      {unlinkedPaid(p) ? (p.kind === "RECEIVABLE" ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet") : actionName(p.kind)}
+      {["TASLAK", "ONAY BEKLİYOR"].includes(p.status) || ["draft", "pending"].includes(p.approval_status) ? "Önce onaylayın" : unlinkedPaid(p) ? (p.kind === "RECEIVABLE" ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet") : actionName(p.kind)}
     </Button>
   );
   const amountDetails = (p) => <>
     <div className="font-semibold tabular-nums">{fmtUSD(remaining(p))}</div>
+    {p.currency && p.currency !== "USD" && <div className="text-[11px] text-[#636366]">{fmtMoney(originalRemaining(p), p.currency)}</div>}
     <div className="text-[11px] text-[#86868B] mt-1">Toplam {fmtUSD(p.usd_amount)}</div>
     {unlinkedPaid(p) ? <div className="text-[10px] text-[#86868B] mt-1">Elle kapatıldı · Hareket bağlı değil</div>
-      : p.paid_usd > 0 && <div className="text-[11px] text-[#86868B]">{p.kind === "RECEIVABLE" ? "Tahsil edilen" : "Ödenen"} {fmtUSD(p.paid_usd)}</div>}
+      : p.paid_usd > 0 && <div className="text-[11px] text-[#86868B]">Mahsup edilen {fmtUSD(p.paid_usd)}</div>}
   </>;
 
   return (
@@ -167,10 +184,10 @@ export default function Payments() {
       </Card>
 
       <details className="group bg-white rounded-2xl border border-[#E5E5EA]" data-testid="payment-history">
-        <summary className="list-none cursor-pointer p-4 sm:p-5 flex items-center justify-between gap-3"><div><span className="text-sm font-medium">İşlem geçmişi</span><span className="ml-2 text-xs text-[#86868B]">{privateValue(items.length)} hareket</span></div><ChevronDown className="w-4 h-4 text-[#86868B] transition-transform group-open:rotate-180" /></summary>
+        <summary className="list-none cursor-pointer p-4 sm:p-5 flex items-center justify-between gap-3"><div><span className="text-sm font-medium">İşlem geçmişi</span><span className="ml-2 text-xs text-[#86868B]">{privateValue(items.filter((p) => !p.voided).length)} aktif hareket</span></div><ChevronDown className="w-4 h-4 text-[#86868B] transition-transform group-open:rotate-180" /></summary>
         <div className="px-4 pb-4 sm:px-5 sm:pb-5 border-t border-[#F5F5F7]">
-          <div className="flex flex-wrap gap-3 mt-4 mb-4"><Input aria-label="İşlem geçmişinde ara" value={historyQuery} onChange={(e) => setHistoryQuery(e.target.value)} placeholder="Firma, hesap veya açıklama ara…" className="bg-[#F5F5F7] border-0 rounded-lg flex-1 min-w-[180px]" /><Button variant="outline" size="sm" onClick={startIndependent} className="h-9 rounded-lg gap-1"><Plus className="w-3.5 h-3.5" />Bağımsız işlem ekle</Button></div>
-          {!movements.length ? <p className="py-6 text-center text-sm text-[#86868B]">Gösterilecek hareket yok.</p> : <div className="divide-y divide-[#F5F5F7]">{movements.map((p) => <div key={p.id} className="flex items-center gap-3 py-3"><button onClick={() => setEditing({ ...p })} data-testid={`row-payment-${p.id}`} className="flex-1 min-w-0 text-left flex justify-between gap-3 rounded-lg hover:bg-[#FAFAFA] p-2"><div className="min-w-0"><div className="text-xs font-medium mb-1" style={{ color: p.type === "TAHSİL" ? "#1F8942" : "#D92D20" }}>{p.type === "TAHSİL" ? "Tahsilat" : "Ödeme"}</div><div className="text-sm truncate">{p.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B] mt-1">{fmtDate(p.date)}{p.payment_method ? ` · ${p.payment_method}` : ""}</div></div><div className="shrink-0 text-right"><div className="text-sm font-semibold">{fmtUSD(p.usd_amount)}</div><div className="text-[10px] text-[#86868B] mt-1">{p.payable_id ? "Kayda bağlı" : "Bağımsız"}</div></div></button><button aria-label="Hareketi sil" onClick={() => remove(p)} className="p-2 text-[#86868B] hover:text-[#D92D20]"><Trash2 className="w-4 h-4" /></button></div>)}</div>}
+          <div className="flex flex-wrap gap-3 mt-4 mb-4"><Input aria-label="İşlem geçmişinde ara" value={historyQuery} onChange={(e) => setHistoryQuery(e.target.value)} placeholder="Firma, hesap veya açıklama ara…" className="bg-[#F5F5F7] border-0 rounded-lg flex-1 min-w-[180px]" /><Button disabled={!canWrite} variant="outline" size="sm" onClick={startIndependent} className="h-9 rounded-lg gap-1"><Plus className="w-3.5 h-3.5" />Bağımsız işlem ekle</Button></div>
+          {!movements.length ? <p className="py-6 text-center text-sm text-[#86868B]">Gösterilecek hareket yok.</p> : <div className="divide-y divide-[#F5F5F7]">{movements.map((p) => <div key={p.id} className="flex items-center gap-3 py-3"><button disabled={p.voided || !canWrite} onClick={() => setEditing({ ...p })} data-testid={`row-payment-${p.id}`} className="flex-1 min-w-0 text-left flex justify-between gap-3 rounded-lg hover:bg-[#FAFAFA] p-2"><div className="min-w-0"><div className="text-xs font-medium mb-1" style={{ color: p.type === "TAHSİL" ? "#1F8942" : "#D92D20" }}>{p.type === "TAHSİL" ? "Tahsilat" : "Ödeme"}</div><div className="text-sm truncate">{p.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B] mt-1">{fmtDate(p.date)}{p.payment_method ? ` · ${p.payment_method}` : ""}</div></div><div className="shrink-0 text-right"><div className="text-sm font-semibold">{fmtUSD(p.usd_amount)}</div><div className="text-[10px] text-[#86868B] mt-1">{p.voided ? "İPTAL · Geçmiş kaydı" : p.posting_status === "draft" ? "TASLAK · Nakde yansımaz" : p.payable_id ? "Kayda bağlı" : "Bağımsız"}</div></div></button><button disabled={p.voided || !canWrite} aria-label="Hareketi iptal et" onClick={() => remove(p)} className="p-2 text-[#86868B] hover:text-[#D92D20]"><Trash2 className="w-4 h-4" /></button></div>)}</div>}
         </div>
       </details>
 
@@ -178,17 +195,18 @@ export default function Payments() {
         <SheetContent className="w-full sm:max-w-lg overflow-y-auto rounded-l-3xl">
           <SheetHeader><SheetTitle>{editing?.id ? (isReceipt ? "Tahsilatı Düzenle" : "Ödemeyi Düzenle") : isReceipt ? "Tahsilat Kaydet" : "Ödeme Kaydet"}</SheetTitle><SheetDescription>{linked ? (isReceipt ? "Seçilen alacağa tahsilat kaydedilecek." : "Seçilen borca ödeme kaydedilecek.") : "Bir borç veya alacak seçerek hareketi bağlayabilirsiniz."}</SheetDescription></SheetHeader>
           {editing && <div className="mt-6 space-y-5">
-            {linked && <div className="p-4 rounded-xl bg-[#F5F5F7] space-y-2"><div className="text-[11px] font-semibold text-[#86868B]">{isReceipt ? "ALACAK → TAHSİLAT" : "BORÇ → ÖDEME"}</div><div className="text-sm font-medium">{linked.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B]">{linked.ship || "—"} · Vade {fmtDate(linked.due_date)}</div><div className="text-sm">{unlinkedPaid(linked) ? "Hareketle eşleşmeyen tutar" : "Kalan"}: <strong>{fmtUSD(linked.remaining_usd ?? linked.usd_amount)}</strong></div></div>}
+            {linked && <div className="p-4 rounded-xl bg-[#F5F5F7] space-y-2"><div className="text-[11px] font-semibold text-[#86868B]">{isReceipt ? "ALACAK → TAHSİLAT" : "BORÇ → ÖDEME"}</div><div className="text-sm font-medium">{linked.vendor || "Firma belirtilmedi"}</div><div className="text-xs text-[#86868B]">{linked.ship || "—"} · Vade {fmtDate(linked.due_date)}</div><div className="text-sm">Kalan: <strong>{fmtMoney(originalRemaining(linked), linked.currency || "USD")}</strong></div></div>}
             {(!linked || editing.id) && <>
               <Field label="İlgili borç / alacak"><Select value={editing.payable_id || "independent"} onValueChange={(id) => { const p = payables.find((row) => row.id === id); setEditing(p ? { ...editing, ...linkFields(p) } : { ...editing, payable_id: null }); }}><SelectTrigger aria-label="İlgili borç / alacak" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="independent">Bağımsız işlem</SelectItem>{payables.filter((p) => p.id === editing.payable_id || canSettle(p)).map((p) => <SelectItem key={p.id} value={p.id}>{p.kind === "RECEIVABLE" ? "Alacak" : "Borç"} · {p.vendor || "—"} · {fmtDate(p.due_date)} · {fmtUSD(p.remaining_usd ?? p.usd_amount)}</SelectItem>)}</SelectContent></Select></Field>
-              {!linked && <><Field label="İşlem"><Select value={editing.type} onValueChange={(type) => setEditing({ ...editing, type })}><SelectTrigger aria-label="İşlem türü" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="TEDİYE">Ödeme</SelectItem><SelectItem value="TAHSİL">Tahsilat</SelectItem></SelectContent></Select></Field><Field label="Firma"><Choice value={editing.vendor} onChange={(vendor) => setEditing({ ...editing, vendor })} options={masters.vendors.map((p) => p.name)} /></Field></>}
+              {!linked && <><Field label="İşlem"><Select value={editing.type} onValueChange={(type) => setEditing({ ...editing, type })}><SelectTrigger aria-label="İşlem türü" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="TEDİYE">Ödeme</SelectItem><SelectItem value="TAHSİL">Tahsilat</SelectItem></SelectContent></Select></Field><Field label="Firma"><Choice value={editing.vendor} onChange={(vendor) => setEditing({ ...editing, vendor, vendor_id: null })} options={masters.vendors.map((p) => p.name)} /></Field></>}
             </>}
             <div className="grid grid-cols-2 gap-3"><Field label={isReceipt ? "Tahsilat tutarı *" : "Ödeme tutarı *"}><Input aria-label="İşlem tutarı" type="number" step="0.01" min="0.01" value={editing.amount ?? ""} onChange={(e) => changeAmount({ amount: e.target.value === "" ? "" : Number(e.target.value) })} /></Field><Field label="Para birimi"><Choice value={editing.currency} onChange={(currency) => changeAmount({ currency, fx_rate: fxRateOf(currency) })} options={[...new Set(["USD", ...masters.currencies.map((c) => c.code)])]} /></Field></div>
             <Field label="Tarih *"><Input aria-label="İşlem tarihi" type="date" value={editing.date?.slice(0, 10) || ""} onChange={(e) => setEditing({ ...editing, date: e.target.value })} /></Field>
-            <Field label="Hesap / Banka"><Choice value={editing.payment_method} onChange={(payment_method) => setEditing({ ...editing, payment_method })} options={masters.banks.map((b) => b.name)} /></Field>
-            {editing.currency !== "USD" && <div className="grid grid-cols-2 gap-3"><Field label="TL kuru"><Input type="number" step="0.0001" value={editing.fx_rate ?? ""} onChange={(e) => changeAmount({ fx_rate: Number(e.target.value) })} /></Field><Field label="USD karşılığı"><Input type="number" step="0.01" value={editing.usd_amount ?? ""} onChange={(e) => setEditing({ ...editing, usd_amount: Number(e.target.value) })} /></Field></div>}
+            <Field label="Hesap / Banka (gerçekleşen işlemde zorunlu)"><Choice value={editing.payment_method} onChange={(payment_method) => setEditing({ ...editing, payment_method, bank_account_id: null })} options={masters.banks.map((b) => b.name)} /></Field>
+            {editing.currency !== "USD" && <div className="grid grid-cols-2 gap-3"><Field label="TL kuru"><Input type="number" step="0.0001" disabled={editing.currency === "TL"} value={editing.currency === "TL" ? 1 : editing.fx_rate ?? ""} onChange={(e) => changeAmount({ fx_rate: Number(e.target.value) })} /></Field><Field label="USD karşılığı"><Input type="number" step="0.01" value={editing.usd_amount ?? ""} onChange={(e) => setEditing({ ...editing, usd_amount: Number(e.target.value) })} /></Field></div>}
             <details className="border-t border-[#E5E5EA] pt-4"><summary className="text-xs text-[#636366] cursor-pointer">Ek bilgiler</summary><div className="mt-4 space-y-4"><Field label="Şirket"><Choice value={editing.paying_company} onChange={(paying_company) => setEditing({ ...editing, paying_company })} options={masters.companies.map((c) => c.name)} /></Field>{!linked && <Field label="Gemi / Birim"><Choice value={editing.ship} onChange={(ship) => setEditing({ ...editing, ship })} options={masters.ships.map((s) => s.name)} /></Field>}<Field label="Açıklama"><Textarea value={editing.description || ""} onChange={(e) => setEditing({ ...editing, description: e.target.value })} className="bg-[#F5F5F7] border-0 rounded-lg" rows={2} /></Field></div></details>
-            <div className="flex gap-2 border-t border-[#E5E5EA] pt-4"><Button disabled={saving} data-testid="btn-save-payment" onClick={save} className="flex-1 bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg">{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{editing.id ? "Değişiklikleri Kaydet" : isReceipt ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet"}</Button><Button disabled={saving} variant="outline" onClick={() => setEditing(null)} className="rounded-lg">Vazgeç</Button></div>
+            {editing.fx_difference_usd !== undefined && Math.abs(editing.fx_difference_usd) >= 0.01 && <p className="text-xs text-[#86868B]">Kayıtlı kur farkı: {fmtUSD(editing.fx_difference_usd)}. Belge özgün para birimindeki mahsup tutarıyla kapanır.</p>}
+            <div className="flex flex-wrap gap-2 border-t border-[#E5E5EA] pt-4"><Button disabled={saving || !canWrite} data-testid="btn-save-payment" onClick={() => save("posted")} className="flex-1 bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg">{saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{editing.id ? "Değişiklikleri Kaydet" : isReceipt ? "Tahsilatı Kaydet" : "Ödemeyi Kaydet"}</Button><Button disabled={saving || !canWrite} variant="outline" onClick={() => save("draft")} className="rounded-lg">Taslak Kaydet</Button><Button disabled={saving} variant="outline" onClick={() => setEditing(null)} className="rounded-lg">Vazgeç</Button></div>
           </div>}
         </SheetContent>
       </Sheet>

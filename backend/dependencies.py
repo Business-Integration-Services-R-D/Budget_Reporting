@@ -31,8 +31,8 @@ async def get_current_user(request: Request) -> dict:
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Geçersiz token tipi")
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    if not user or user.get("active") is False:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı veya pasif")
     return user
 
 
@@ -56,3 +56,21 @@ async def write_audit(user: dict, action: str, resource: str, resource_id: Optio
         })
     except Exception as e:
         logger.warning("audit yazılamadı: %s", e)
+
+
+async def require_writer(user: dict = Depends(get_current_user)) -> dict:
+    if user.get('role') not in {'admin', 'manager', 'accountant', 'finance', 'operations'}:
+        raise HTTPException(403, 'Bu işlem için kayıt düzenleme yetkisi gerekiyor.')
+    return user
+
+
+async def require_finance(user: dict = Depends(get_current_user)) -> dict:
+    if user.get('role') not in {'admin', 'manager', 'accountant', 'finance'}:
+        raise HTTPException(403, 'Bu işlem için finans yetkisi gerekiyor.')
+    return user
+
+
+async def require_approver(user: dict = Depends(get_current_user)) -> dict:
+    if user.get('role') not in {'admin', 'manager', 'accountant'}:
+        raise HTTPException(403, 'Belge onaylamak için yönetici veya muhasebe yetkisi gerekiyor.')
+    return user

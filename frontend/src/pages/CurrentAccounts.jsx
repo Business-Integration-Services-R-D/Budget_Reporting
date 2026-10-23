@@ -27,7 +27,7 @@ export default function CurrentAccounts() {
 
   const openAccount = async (a) => {
     setSelected(a);
-    const { data } = await api.get(`/current-accounts/${encodeURIComponent(a.name)}`);
+    const { data } = await api.get(`/current-accounts/${encodeURIComponent(a.id || a.name)}`);
     setDetail(data);
   };
 
@@ -53,7 +53,7 @@ export default function CurrentAccounts() {
                   key={i}
                   data-testid={`ca-${i}`}
                   onClick={() => openAccount(a)}
-                  className={`w-full px-5 py-3 flex items-center justify-between hover:bg-[#FAFAFA] text-left transition ${selected?.name === a.name ? "bg-[#FAFAFA]" : ""}`}
+                  className={`w-full px-5 py-3 flex items-center justify-between hover:bg-[#FAFAFA] text-left transition ${selected?.id === a.id ? "bg-[#FAFAFA]" : ""}`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-[#1D1D1F] truncate">{a.name}</div>
@@ -61,7 +61,7 @@ export default function CurrentAccounts() {
                   </div>
                   <div className="text-right">
                     <div className={`text-sm font-semibold tabular-nums ${a.balance > 0 ? "text-[#D92D20]" : "text-[#1F8942]"}`}>{fmtUSD(a.balance)}</div>
-                    <div className="text-[10px] text-[#86868B]">{a.balance > 0 ? "borç" : "bakiye"}</div>
+                    <div className="text-[10px] text-[#86868B]">{a.balance > 0 ? "Net borcumuz" : a.balance < 0 ? "Net alacağımız" : "Hesap kapalı"}</div>
                   </div>
                 </button>
               ))}
@@ -78,21 +78,11 @@ export default function CurrentAccounts() {
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base font-semibold text-[#1D1D1F] truncate">{detail.name}</h3>
                 </div>
-                <div className="flex gap-4 sm:gap-6 text-right shrink-0">
-                  <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Borç</div>
-                    <div className="text-sm font-semibold text-[#D92D20] tabular-nums">{fmtUSD(detail.summary.debt)}</div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Ödenen</div>
-                    <div className="text-sm font-semibold text-[#1F8942] tabular-nums">{fmtUSD(detail.summary.paid)}</div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Bakiye</div>
-                    <div className="text-sm font-semibold tabular-nums">{fmtUSD(detail.summary.balance)}</div>
-                  </div>
+                <div className="flex flex-wrap gap-4 text-right shrink-0">
+                  {[['Borç', detail.summary.debt], ['Ödeme mahsup', detail.summary.paid], ['Alacak', detail.summary.receivable], ['Tahsilat mahsup', detail.summary.received], ['Net cari', detail.summary.balance]].map(([label, value]) => <div key={label}><div className="text-[10px] uppercase tracking-wider text-[#86868B]">{label}</div><div className="text-sm font-semibold tabular-nums">{fmtUSD(value)}</div></div>)}
                 </div>
               </div>
+              <p className="px-4 sm:px-6 py-2 text-xs text-[#86868B]">Pozitif bakiye net borcumuzu, negatif bakiye net alacağımızı gösterir. İptal ve onaysız belgeler dahil edilmez.</p>
               <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-[#FAFAFA] sticky top-0">
@@ -107,7 +97,7 @@ export default function CurrentAccounts() {
                     {detail.payables?.map((p, i) => (
                       <tr key={`b-${i}`} className="border-b border-[#F5F5F7]">
                         <td className="px-4 py-2.5 tabular-nums">{fmtDate(p.due_date)}</td>
-                        <td className="px-4 py-2.5 text-[#D92D20] font-medium">BORÇ</td>
+                        <td className="px-4 py-2.5 text-[#D92D20] font-medium">{p.kind === "RECEIVABLE" ? "ALACAK" : "BORÇ"}</td>
                         <td className="px-4 py-2.5 truncate max-w-md">{p.description || p.expense_type || "—"}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{fmtUSD(p.usd_amount)}</td>
                       </tr>
@@ -115,7 +105,7 @@ export default function CurrentAccounts() {
                     {detail.payments?.map((p, i) => (
                       <tr key={`p-${i}`} className="border-b border-[#F5F5F7]">
                         <td className="px-4 py-2.5 tabular-nums">{fmtDate(p.date)}</td>
-                        <td className="px-4 py-2.5 text-[#1F8942] font-medium">{p.type}</td>
+                        <td className="px-4 py-2.5 text-[#1F8942] font-medium">{p.type === "TAHSİL" ? "TAHSİLAT" : "ÖDEME"}</td>
                         <td className="px-4 py-2.5 truncate max-w-md">{p.description || p.payment_method || "—"}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{fmtUSD(p.usd_amount)}</td>
                       </tr>

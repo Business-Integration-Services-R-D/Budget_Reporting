@@ -52,7 +52,7 @@ export default function Dashboard() {
   const kpis = [
     { label: "Açık Borç", value: kpi?.open_payable?.total, count: kpi?.open_payable?.count, icon: ArrowDownToLine, accent: "#D92D20" },
     { label: "Açık Alacak", value: kpi?.open_receivable?.total, count: kpi?.open_receivable?.count, icon: ArrowUpFromLine, accent: "#1F8942" },
-    { label: "Net Pozisyon", value: kpi?.net_position, count: null, icon: TrendingUp, accent: "#007AFF", isNet: true },
+    { label: "Net Nakit Hareketi", value: kpi?.net_position, count: null, icon: TrendingUp, accent: "#007AFF", isNet: true },
     { label: "Vadesi Geçmiş", value: kpi?.overdue?.total, count: kpi?.overdue?.count, icon: AlertCircle, accent: "#D92D20" },
     { label: "Önümüzdeki 7 Gün", value: kpi?.week_due?.total, count: kpi?.week_due?.count, icon: CalendarClock, accent: "#B26205" },
     { label: "Önümüzdeki 30 Gün", value: kpi?.month_due?.total, count: kpi?.month_due?.count, icon: Calendar, accent: "#86868B" },

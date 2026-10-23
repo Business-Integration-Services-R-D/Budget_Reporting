@@ -1,11 +1,12 @@
 """Payables / Receivables router."""
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, ConfigDict
 from database import db
+from finance import POSTED, approval, APPROVAL_LABELS, resolve_vendor, number, basis, allocation
 from settlements import settlement_lock, sync_payable, DERIVED_STATUSES
-from dependencies import get_current_user, write_audit, _uid, _now
+from dependencies import require_writer, require_approver, get_current_user, write_audit, _uid, _now
 
 router = APIRouter(prefix="/payables", tags=["payables"])
 
@@ -27,6 +28,8 @@ class PayableInput(BaseModel):
     usd_amount: Optional[float] = 0
     status: Optional[str] = "ONAY BEKLİYOR"
     kind: Optional[str] = "PAYABLE"
+    approval_status: Optional[Literal["draft", "pending", "approved"]] = None
+    vendor_id: Optional[str] = None
 
 
 def _apply_year_month(doc: dict):
@@ -65,12 +68,25 @@ async def list_payables(
 
 
 @router.post("")
-async def create_payable(body: PayableInput, user: dict = Depends(get_current_user)):
+async def create_payable(body: PayableInput, user: dict = Depends(require_writer)):
+    return await create_payable_record(db, body, user)
+
+
+async def create_payable_record(store, body: PayableInput, user: dict):
+    db = store
+    await require_writer(user)
     doc = body.model_dump()
     if doc.get("status") in DERIVED_STATUSES:
         raise HTTPException(400, "Ödendi ve Kısmi Ödeme durumları ödeme/tahsilat hareketlerinden otomatik belirlenir.")
-    for field in ("paid_usd", "remaining_usd", "_status_before_payments"):
+    for field in ("paid_usd", "remaining_usd", "_status_before_payments", "remaining_amount", "paid_original", "cash_paid_usd", "fx_difference_usd", "payment_status"):
         doc.pop(field, None)
+    number(doc.get("original_amount"))
+    number(doc.get("usd_amount"))
+    doc["approval_status"] = approval(doc)
+    doc["payment_status"] = "unpaid"
+    if doc["approval_status"] == "approved":
+        await require_approver(user)
+    await resolve_vendor(db, doc)
     doc["id"] = _uid()
     _apply_year_month(doc)
     doc["created_at"] = _now()
@@ -92,9 +108,15 @@ async def get_payable(pid: str, user: dict = Depends(get_current_user)):
 
 
 @router.put("/{pid}")
-async def update_payable(pid: str, body: PayableInput, user: dict = Depends(get_current_user)):
+async def update_payable(pid: str, body: PayableInput, user: dict = Depends(require_writer)):
+    return await update_payable_record(db, pid, body, user)
+
+
+async def update_payable_record(store, pid: str, body: PayableInput, user: dict):
+    db = store
+    await require_writer(user)
     update = body.model_dump(exclude_unset=True)
-    for field in ("id", "_id", "paid_usd", "remaining_usd", "_status_before_payments"):
+    for field in ("id", "_id", "paid_usd", "remaining_usd", "_status_before_payments", "remaining_amount", "paid_original", "cash_paid_usd", "fx_difference_usd", "payment_status"):
         update.pop(field, None)
     update["updated_at"] = _now()
     _apply_year_month(update)
@@ -104,15 +126,34 @@ async def update_payable(pid: str, body: PayableInput, user: dict = Depends(get_
             raise HTTPException(404, "Bulunamadı")
         if update.get("status") in DERIVED_STATUSES and update["status"] != existing.get("status"):
             raise HTTPException(400, "Ödendi ve Kısmi Ödeme durumları ödeme/tahsilat hareketlerinden otomatik belirlenir.")
-        linked = await db.payments.find_one({"payable_id": pid})
+        for field in ("original_amount", "usd_amount"):
+            if field in update:
+                number(update[field])
+        merged = {**existing, **update}
+        if update.get("status") in APPROVAL_LABELS.values() and "approval_status" not in update:
+            merged["approval_status"] = {v: k for k, v in APPROVAL_LABELS.items()}[update["status"]]
+        new_approval = approval(merged)
+        if new_approval == "approved" and approval(existing) != "approved":
+            await require_approver(user)
+        update["approval_status"] = new_approval
+        linked = await db.payments.find_one({**POSTED, "payable_id": pid})
         if linked:
-            if any(field in update and update[field] != existing.get(field) for field in ("kind", "vendor", "ship")):
-                raise HTTPException(400, "Bağlı ödemesi olan kaydın türü, firması ve gemisi değiştirilemez.")
-            paid = await db.payments.aggregate([
-                {"$match": {"payable_id": pid}}, {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}}}
-            ]).to_list(1)
-            if float(update.get("usd_amount", existing.get("usd_amount")) or 0) + 0.005 < float(paid[0]["total"] or 0):
-                raise HTTPException(400, "Borç tutarı bağlı ödeme toplamından küçük olamaz.")
+            if update.get("status") == "İPTAL":
+                raise HTTPException(409, "Ödemesi olan kayıt doğrudan iptal edilemez. Önce bağlı hareketi iptal edin veya iade/mahsup kaydedin.")
+            if new_approval != "approved":
+                raise HTTPException(409, "Ödemesi olan belgenin onayı kaldırılamaz.")
+            if any(field in update and update[field] != existing.get(field) for field in ("kind", "vendor_id", "ship", "currency")):
+                raise HTTPException(400, "Ödemesi olan kaydın türü, firması, gemisi ve para birimi değiştirilemez.")
+            if "vendor" in update and not existing.get("vendor_id") and update['vendor'] != existing.get('vendor'):
+                raise HTTPException(400, "Ödemesi olan kaydın firması değiştirilemez.")
+            rows = await db.payments.find({**POSTED, "payable_id": pid}).to_list(None)
+            if basis(merged)[0] + 0.005 < sum(allocation(p, existing) for p in rows):
+                raise HTTPException(400, "Belge tutarı mahsup edilen tutardan küçük olamaz.")
+        if merged.get("status") != "İPTAL" and (not linked or update.get("status") in APPROVAL_LABELS.values()):
+            update["status"] = APPROVAL_LABELS[new_approval]
+        await resolve_vendor(db, merged)
+        if merged.get("vendor_id"):
+            update["vendor_id"], update["vendor"] = merged['vendor_id'], merged['vendor']
         await db.payables.update_one({"id": pid}, {"$set": update})
         await sync_payable(db, pid)
     await write_audit(user, "update", "payable", pid)
@@ -120,7 +161,13 @@ async def update_payable(pid: str, body: PayableInput, user: dict = Depends(get_
 
 
 @router.delete("/{pid}")
-async def delete_payable(pid: str, user: dict = Depends(get_current_user)):
+async def delete_payable(pid: str, user: dict = Depends(require_writer)):
+    return await delete_payable_record(db, pid, user)
+
+
+async def delete_payable_record(store, pid: str, user: dict):
+    db = store
+    await require_writer(user)
     async with settlement_lock(pid):
         if await db.payments.find_one({"payable_id": pid}):
             raise HTTPException(409, "Önce bu kayda bağlı ödemeleri kaldırın veya bağlantılarını değiştirin.")

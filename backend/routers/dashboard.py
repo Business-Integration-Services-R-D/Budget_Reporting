@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends
 from database import db
 from settlements import OPEN_AMOUNT
+from finance import POSTED, OPEN, APPROVED
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -17,11 +18,11 @@ def _g(r):
 @router.get("/kpi")
 async def dashboard_kpi(user: dict = Depends(get_current_user)):
     open_payable = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
+        {"$match": {**OPEN, "kind": "PAYABLE"}},
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     open_receivable = await db.payables.aggregate([
-        {"$match": {"kind": "RECEIVABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
+        {"$match": {**OPEN, "kind": "RECEIVABLE"}},
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     today = datetime.now(timezone.utc).date()
@@ -29,26 +30,26 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
     month_later = (today + timedelta(days=30)).isoformat()
     today_iso = today.isoformat()
     week_due = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+        {"$match": {**OPEN, "kind": "PAYABLE",
                     "due_date": {"$gte": today_iso, "$lte": week_later}}},
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     month_due = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+        {"$match": {**OPEN, "kind": "PAYABLE",
                     "due_date": {"$gte": today_iso, "$lte": month_later}}},
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     overdue = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+        {"$match": {**OPEN, "kind": "PAYABLE",
                     "due_date": {"$lt": today_iso}}},
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     paid_total = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
+        {"$match": {**POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
     received_total = await db.payments.aggregate([
-        {"$match": {"type": "TAHSİL"}},
+        {"$match": {**POSTED, "type": "TAHSİL"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
 
@@ -68,7 +69,7 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
 @router.get("/cashflow")
 async def dashboard_cashflow(months: int = 12, user: dict = Depends(get_current_user)):
     pipeline = [
-        {"$match": {"date": {"$ne": None}}},
+        {"$match": {**POSTED, "date": {"$ne": None}}},
         {"$addFields": {"_d": {"$dateFromString": {"dateString": "$date", "onError": None}}}},
         {"$match": {"_d": {"$ne": None}}},
         {"$group": {
@@ -90,7 +91,7 @@ async def dashboard_cashflow(months: int = 12, user: dict = Depends(get_current_
 @router.get("/by-ship")
 async def dashboard_by_ship(user: dict = Depends(get_current_user)):
     rows = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}},
+        {"$match": {**OPEN, "kind": "PAYABLE"}},
         {"$group": {"_id": "$ship", "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(50)
@@ -100,7 +101,7 @@ async def dashboard_by_ship(user: dict = Depends(get_current_user)):
 @router.get("/by-company")
 async def dashboard_by_company(user: dict = Depends(get_current_user)):
     rows = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
+        {"$match": {**POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$paying_company", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(50)
@@ -110,7 +111,7 @@ async def dashboard_by_company(user: dict = Depends(get_current_user)):
 @router.get("/by-expense-type")
 async def dashboard_by_expense(user: dict = Depends(get_current_user)):
     rows = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE"}},
+        {"$match": {**APPROVED, "kind": "PAYABLE"}},
         {"$group": {"_id": "$expense_type", "total": {"$sum": "$usd_amount"}}},
         {"$sort": {"total": -1}}, {"$limit": 12}
     ]).to_list(20)
@@ -122,12 +123,11 @@ async def dashboard_upcoming(days: int = 30, user: dict = Depends(get_current_us
     today = datetime.now(timezone.utc).date().isoformat()
     end = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
     return await db.payables.find({
-        "kind": "PAYABLE",
-        "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+        **OPEN, "kind": "PAYABLE",
         "due_date": {"$gte": today, "$lte": end}
     }, {"_id": 0}).sort("due_date", 1).to_list(50)
 
 
 @router.get("/recent")
 async def dashboard_recent(limit: int = 20, user: dict = Depends(get_current_user)):
-    return await db.payments.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return await db.payments.find(POSTED, {"_id": 0}).sort("created_at", -1).to_list(limit)

@@ -1,7 +1,7 @@
 import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, fmtUSD, fmtDate } from "@/lib/api";
+import { api, fmtUSD, fmtDate, fmtMoney } from "@/lib/api";
 import { Page, Card, EmptyState, StatusBadge } from "@/components/Primitives";
 import { Wallet, ArrowRight, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 
@@ -21,7 +21,7 @@ export default function CashAndBank() {
 
   const openBank = async (b) => {
     setSelected(b);
-    const { data } = await api.get(`/bank-accounts/${encodeURIComponent(b.name)}/transactions`);
+    const { data } = await api.get(`/bank-accounts/${encodeURIComponent(b.id || b.name)}/transactions`);
     setTx(data);
   };
 
@@ -31,7 +31,7 @@ export default function CashAndBank() {
         <Card className="lg:col-span-1 overflow-hidden">
           <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50">
             <h3 className="text-base font-medium text-[#1D1D1F]">Hesaplar</h3>
-            <p className="text-xs text-[#86868B] mt-0.5">Net hareket (Tahsil − Tediye)</p>
+            <p className="text-xs text-[#86868B] mt-0.5">Mevcut bakiye = Açılış + Giriş − Çıkış</p>
           </div>
           {loading ? (
             <div className="p-6 space-y-3">{[...Array(8)].map((_, i) => <div key={i} className="skeleton h-12 w-full"/>)}</div>
@@ -49,8 +49,8 @@ export default function CashAndBank() {
                     <div className="text-xs text-[#86868B]">{b.type || "Banka"}</div>
                   </div>
                   <div className="text-right">
-                    <div className={`text-sm font-semibold tabular-nums ${b.net >= 0 ? "text-[#1F8942]" : "text-[#D92D20]"}`}>{fmtUSD(b.net)}</div>
-                    <div className="text-[10px] text-[#86868B]">net</div>
+                    <div className={`text-sm font-semibold tabular-nums ${b.current_balance >= 0 ? "text-[#1F8942]" : "text-[#D92D20]"}`}>{fmtMoney(b.current_balance, b.balance_currency || b.currency)}</div>
+                    <div className="text-[10px] text-[#86868B]">mevcut bakiye</div>
                   </div>
                 </button>
               ))}
@@ -70,19 +70,20 @@ export default function CashAndBank() {
                 </div>
                 <div className="flex gap-4 sm:gap-6 text-right">
                   <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Giren</div>
+                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Giren USD</div>
                     <div className="text-sm font-semibold text-[#1F8942] tabular-nums">{fmtUSD(selected.in)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Çıkan</div>
+                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Çıkan USD</div>
                     <div className="text-sm font-semibold text-[#D92D20] tabular-nums">{fmtUSD(selected.out)}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Net</div>
-                    <div className="text-sm font-semibold tabular-nums">{fmtUSD(selected.net)}</div>
+                    <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#86868B]">Mevcut bakiye</div>
+                    <div className="text-sm font-semibold tabular-nums">{fmtMoney(selected.current_balance, selected.balance_currency || selected.currency)}</div>
                   </div>
                 </div>
               </div>
+              <p className="px-4 sm:px-6 py-2 text-xs text-[#86868B]">Açılış: {fmtMoney(selected.opening_balance, selected.balance_currency || selected.currency)} · Net hareket: {fmtMoney(selected.native_net, selected.balance_currency || selected.currency)}{selected.balance_estimated ? " · Eski farklı dövizli hareketler güncel kurla tahmin edilmiştir." : ""}</p>
               <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-[#FAFAFA] sticky top-0">

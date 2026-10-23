@@ -26,9 +26,9 @@ class PaymentSettlementTests(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         for module in (payments, payables, dashboard, reports, accounts):
             app.include_router(module.router, prefix='/api')
-        app.dependency_overrides[dependencies.get_current_user] = lambda: {'id': 'tester', 'email': 'test@local.dev'}
+        app.dependency_overrides[dependencies.get_current_user] = lambda: {'id': 'tester', 'email': 'test@local.dev', 'role': 'admin'}
         self.api = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test')
-        await self.db.banks.insert_one({'id': 'test-bank', 'name': 'Test Bank'})
+        await self.db.banks.insert_one({'id': 'test-bank', 'name': 'Test Bank', 'currency': 'USD'})
         self.debt = await self.create_debt()
 
     async def asyncTearDown(self):
@@ -68,7 +68,7 @@ class PaymentSettlementTests(unittest.IsolatedAsyncioTestCase):
         ships = (await self.api.get('/api/dashboard/by-ship')).json()
         self.assertEqual(ships[0]['total'], 600)
         aging = (await self.api.get('/api/reports/aging')).json()
-        self.assertEqual(aging[0]['total'], 600)
+        self.assertEqual(next(row['total'] for row in aging if row['bucket'] == '0-30'), 600)
         monthly = (await self.api.get('/api/reports/monthly-projection')).json()
         self.assertEqual(monthly[0]['total'], 600)
         banks = (await self.api.get('/api/bank-accounts')).json()
@@ -84,7 +84,7 @@ class PaymentSettlementTests(unittest.IsolatedAsyncioTestCase):
         await self.state('ONAYLANDI', 1000)
         banks = (await self.api.get('/api/bank-accounts')).json()
         self.assertEqual(banks[0]['out'], 0)
-        await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 2000})
+        await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 2000, 'original_amount': 2000})
         await self.state('ONAYLANDI', 2000)
 
     async def test_edit_reassign_and_detach(self):
@@ -124,8 +124,8 @@ class PaymentSettlementTests(unittest.IsolatedAsyncioTestCase):
     async def test_guards_and_payable_amount_edit(self):
         payment = (await self.pay(400)).json()
         self.assertEqual((await self.api.delete('/api/payables/' + self.debt['id'])).status_code, 409)
-        self.assertEqual((await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 300})).status_code, 400)
-        r = await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 1500})
+        self.assertEqual((await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 300, 'original_amount': 300})).status_code, 400)
+        r = await self.api.put('/api/payables/' + self.debt['id'], json={'usd_amount': 1500, 'original_amount': 1500})
         self.assertEqual(r.status_code, 200, r.text)
         await self.state('KISMİ ÖDEME', 1100)
         r = await self.api.put('/api/payments/' + payment['id'], json={'amount': 1600})

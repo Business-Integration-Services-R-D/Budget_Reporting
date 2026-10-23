@@ -81,35 +81,18 @@ async def export_excel(user: dict = Depends(get_current_user)):
         ("description", "Açıklama"), ("paying_company", "Ödeyen Şirket"),
         ("payment_method", "Banka/Kasa"), ("ship", "Gemi/Birim"),
         ("amount", "Tutar"), ("currency", "Döviz"), ("fx_rate", "Kur"),
-        ("usd_amount", "USD Karşılığı"), ("approved", "Onaylı"),
+        ("usd_amount", "USD Karşılığı"), ("approved", "Onaylı"), ("posting_status", "Kayıt Durumu"), ("voided", "İptal"), ("payable_id", "Bağlı Belge"), ("fx_difference_usd", "Kur Farkı (USD)"),
         ("created_at", "Eklenme"), ("created_by", "Ekleyen"),
     ])
 
     # 4. Cari Hesaplar Özet
-    payables_agg = await db.payables.aggregate([
-        {"$match": {"kind": "PAYABLE"}},
-        {"$group": {"_id": "$vendor", "debt": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
-    ]).to_list(5000)
-    payments_agg = await db.payments.aggregate([
-        {"$match": {"type": "TEDİYE"}},
-        {"$group": {"_id": "$vendor", "paid": {"$sum": "$usd_amount"}}}
-    ]).to_list(5000)
-    p_map = {p["_id"]: p["paid"] for p in payments_agg if p["_id"]}
-    ca_rows = []
-    for r in payables_agg:
-        if not r["_id"]: continue
-        debt = float(r["debt"] or 0)
-        paid = float(p_map.get(r["_id"], 0))
-        ca_rows.append({
-            "name": r["_id"], "debt": debt, "paid": paid,
-            "balance": debt - paid, "count": r["count"],
-        })
-    ca_rows.sort(key=lambda x: x["balance"], reverse=True)
+    from routers.accounts import _vendor_ledgers
+    ca_rows = sorted(await _vendor_ledgers(db), key=lambda x: x['balance'], reverse=True)
     _write_sheet(wb, "Cari Hesaplar", ca_rows, [
-        ("name", "Cari Adı"), ("debt", "Toplam Borç (USD)"),
-        ("paid", "Ödenen (USD)"), ("balance", "Bakiye (USD)"),
-        ("count", "Kayıt Sayısı"),
-    ])
+        ("name", "Cari Adı"), ("debt", "Toplam Borç (USD)"), ("paid", "Ödenen Mahsup (USD)"),
+        ("receivable", "Toplam Alacak (USD)"), ("received", "Tahsil Mahsup (USD)"),
+        ("cash_paid", "Nakit Ödeme (USD)"), ("cash_received", "Nakit Tahsil (USD)"),
+        ("balance", "Net Borç / Alacak (USD)"), ("count", "Belge Sayısı")])
 
     # 5. Master Data — Tedarikçiler
     vendors = await db.vendors.find({}, {"_id": 0}).to_list(5000)

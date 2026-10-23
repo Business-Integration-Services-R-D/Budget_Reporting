@@ -4,7 +4,9 @@ Her aksiyon: async def handler(params: dict, user: dict, background, db) -> {"cr
 import logging
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
-from dependencies import _uid, _now
+from dependencies import _uid, _now, require_finance
+from finance import OPEN, POSTED, APPROVED, rate, number, basis, allocation
+from settlements import normalize_payment_amount, prepare_payment
 from email_service import send_email
 from pdf_service import generate_statement_pdf
 import resend
@@ -19,66 +21,28 @@ async def _calc_usd(db, currency: str, amount: float) -> float:
         return 0
     if currency.upper() == "USD":
         return float(amount)
-    cur = await db.currencies.find_one({"code": currency}, {"_id": 0})
-    usd_cur = await db.currencies.find_one({"code": "USD"}, {"_id": 0})
-    if cur and usd_cur and usd_cur.get("rate_to_tl"):
-        tl = float(amount) * float(cur.get("rate_to_tl") or 0)
-        return tl / float(usd_cur["rate_to_tl"])
-    return 0
+    return float(amount) * await rate(db, currency) / await rate(db, "USD")
 
 
 async def handle_create_payable(params: dict, user: dict, background, db) -> dict:
-    if not params.get("vendor") or not params.get("original_amount"):
-        raise ValueError("vendor ve original_amount zorunlu")
-    currency = params.get("currency", "USD")
-    amount = float(params.get("original_amount") or 0)
-    doc = {
-        "id": _uid(), "kind": "PAYABLE",
-        "vendor": params.get("vendor"), "ship": params.get("ship"),
-        "armator": params.get("armator"), "expense_type": params.get("expense_type"),
-        "expense_code": params.get("expense_code"), "country": params.get("country"),
-        "description": params.get("description", ""), "order_date": params.get("order_date"),
-        "due_date": params.get("due_date"),
-        "original_amount": amount, "currency": currency,
-        "usd_amount": await _calc_usd(db, currency, amount),
-        "status": params.get("status", "ONAY BEKLİYOR"),
-        "created_at": _now(), "created_by": user["email"], "created_by_ai": True,
-    }
-    if doc["due_date"]:
-        try:
-            d = datetime.fromisoformat(doc["due_date"])
-            doc["year"] = d.year; doc["month"] = d.month
-        except Exception: pass
-    if doc.get("status") in {"ÖDENDİ", "KISMİ ÖDEME"}:
-        raise ValueError("Ödendi ve Kısmi Ödeme durumları yalnızca bağlı ödeme/tahsilat hareketleriyle belirlenir.")
-    await db.payables.insert_one(doc)
-    return {"created_id": doc["id"], "message": f"✅ Yeni borç oluşturuldu: {doc['vendor']} — {amount:,.2f} {currency} (vade: {doc.get('due_date', '-')})"}
+    from routers.payables import PayableInput, create_payable_record
+    payload = dict(params)
+    payload['usd_amount'] = await _calc_usd(db, payload.get('currency', 'USD'), float(payload.get('original_amount') or 0))
+    payload['created_by_ai'] = True
+    doc = await create_payable_record(db, PayableInput(**payload), user)
+    return {'created_id': doc['id'], 'message': f"Borç oluşturuldu: {doc.get('vendor', '')}"}
 
 
 async def handle_create_payment(params: dict, user: dict, background, db) -> dict:
-    currency = params.get("currency", "USD")
-    amount = float(params.get("amount") or 0)
-    doc = {
-        "id": _uid(),
-        "type": params.get("type", "TEDİYE"),
-        "vendor": params.get("vendor"),
-        "paying_company": params.get("paying_company"),
-        "payment_method": params.get("payment_method"),
-        "ship": params.get("ship"),
-        "description": params.get("description", ""),
-        "date": params.get("date"),
-        "amount": amount, "currency": currency,
-        "fx_rate": float(params.get("fx_rate") or 1),
-        "usd_amount": await _calc_usd(db, currency, amount),
-        "approved": False, "created_at": _now(),
-        "created_by": user["email"], "created_by_ai": True,
-    }
-    if currency != "USD":
-        cur = await db.currencies.find_one({"code": currency}, {"_id": 0})
-        if cur and cur.get("rate_to_tl"):
-            doc["fx_rate"] = float(cur["rate_to_tl"])
-    await db.payments.insert_one(doc)
-    return {"created_id": doc["id"], "message": f"✅ {doc['type']} kaydı oluşturuldu: {doc['vendor']} — {amount:,.2f} {currency}"}
+    from routers.payments import PaymentInput, create_payment_record
+    payload = dict(params)
+    # AI proposals remain drafts until an explicit posting request.
+    payload.setdefault('posting_status', 'draft')
+    payload['created_by_ai'] = True
+    if payload.get('currency', 'USD') != 'USD' and not payload.get('fx_rate'):
+        payload['fx_rate'] = await rate(db, payload['currency'])
+    doc = await create_payment_record(db, PaymentInput(**payload), user)
+    return {'created_id': doc['id'], 'message': f"{doc['type']} kaydedildi ({doc['posting_status']})."}
 
 
 async def handle_mark_payable_paid(params: dict, user: dict, background, db) -> dict:
@@ -87,7 +51,7 @@ async def handle_mark_payable_paid(params: dict, user: dict, background, db) -> 
 
 async def _build_payable_query(scope: str):
     today = datetime.now(timezone.utc).date().isoformat()
-    q = {"kind": "PAYABLE", "status": {"$nin": ["ÖDENDİ", "İPTAL"]}}
+    q = {**OPEN, "kind": "PAYABLE"}
     label = "Açık Borçlar"
     s = (scope or "").lower()
     if "vadesi_gecmis" in s or "geçmiş" in s:
@@ -107,12 +71,12 @@ async def _build_payable_query(scope: str):
 async def handle_send_summary_email(params: dict, user: dict, background, db) -> dict:
     q, label = await _build_payable_query(params.get("scope") or "")
     items = await db.payables.find(q, {"_id": 0}).sort("due_date", 1).to_list(50)
-    total = sum(float(p.get("usd_amount", 0) or 0) for p in items)
+    total = sum(float(p.get("remaining_usd", p.get("usd_amount", 0)) or 0) for p in items)
     rows = "".join([
         f"<tr><td style='padding:8px;border-bottom:1px solid #E5E5EA;'>{p.get('vendor', '-')}</td>"
         f"<td style='padding:8px;border-bottom:1px solid #E5E5EA;'>{p.get('description', '-')}</td>"
         f"<td style='padding:8px;border-bottom:1px solid #E5E5EA;text-align:right;'>{(p.get('due_date', '') or '')[:10]}</td>"
-        f"<td style='padding:8px;border-bottom:1px solid #E5E5EA;text-align:right;font-weight:600;'>${p.get('usd_amount', 0):,.2f}</td></tr>"
+        f"<td style='padding:8px;border-bottom:1px solid #E5E5EA;text-align:right;font-weight:600;'>${p.get('remaining_usd', p.get('usd_amount', 0)):,.2f}</td></tr>"
         for p in items[:30]
     ])
     body_html = f"""
@@ -163,15 +127,10 @@ async def handle_update_payable(params: dict, user: dict, background, db) -> dic
         new_currency = update.get("currency", target.get("currency", "USD"))
         new_amount = update.get("original_amount", target.get("original_amount", 0))
         update["usd_amount"] = await _calc_usd(db, new_currency, float(new_amount or 0))
-    # Vade değiştiyse year/month
-    if update.get("due_date"):
-        try:
-            d = datetime.fromisoformat(update["due_date"])
-            update["year"] = d.year; update["month"] = d.month
-        except Exception: pass
-    update["updated_at"] = _now()
-    update["updated_by_ai"] = True
-    await db.payables.update_one({"id": target["id"]}, {"$set": update})
+    from routers.payables import PayableInput, update_payable_record
+    if "vendor" in update and update["vendor"] != target.get("vendor"):
+        update["vendor_id"] = None
+    await update_payable_record(db, target['id'], PayableInput(**update), user)
     changes = ", ".join([f"{k}={v}" for k, v in update.items() if k not in ("updated_at", "updated_by_ai")])
     return {"created_id": target["id"], "message": f"✅ Borç güncellendi: {target.get('vendor', '?')} → {changes}"}
 
@@ -191,20 +150,17 @@ async def handle_delete_payable(params: dict, user: dict, background, db) -> dic
         }, {"_id": 0})
     if not target:
         raise ValueError("Silinecek borç bulunamadı")
-    # Bağlı ödeme varsa uyar — sadece status=İPTAL'a çekelim
-    has_payments = await db.payments.find_one({"payable_id": target["id"]})
-    if has_payments:
-        await db.payables.update_one({"id": target["id"]}, {"$set": {"status": "İPTAL", "updated_at": _now(), "updated_by_ai": True}})
-        return {"created_id": target["id"], "message": f"⚠️ Borca bağlı ödeme olduğu için silinmedi, durumu İPTAL'e alındı: {target.get('vendor', '?')}"}
-    await db.payables.delete_one({"id": target["id"]})
+    from routers.payables import delete_payable_record
+    await delete_payable_record(db, target['id'], user)
     return {"created_id": target["id"], "message": f"🗑️ Borç silindi: {target.get('vendor', '?')} — ${target.get('usd_amount', 0):,.2f}"}
 
 
 async def handle_transfer_between_banks(params: dict, user: dict, background, db) -> dict:
     """Bankalar arası virman. İki kayıt oluşturur: çıkan ve giren."""
+    await require_finance(user)
     from_bank = params.get("from_bank")
     to_bank = params.get("to_bank")
-    amount = float(params.get("amount") or 0)
+    amount = number(params.get("amount"), positive=True)
     currency = params.get("currency", "USD")
     date = params.get("date") or _now()[:10]
     description = params.get("description") or f"Virman: {from_bank} → {to_bank}"
@@ -239,6 +195,13 @@ async def handle_transfer_between_banks(params: dict, user: dict, background, db
         "created_at": _now(), "created_by": user["email"], "created_by_ai": True,
     }
     out_doc["transfer_pair_id"] = in_doc["id"]
+    for doc in (out_doc, in_doc):
+        doc["posting_status"] = "posted"
+        doc["fx_rate"] = await rate(db, currency)
+        await normalize_payment_amount(db, doc)
+        await prepare_payment(db, doc)
+    if out_doc["bank_account_id"] == in_doc["bank_account_id"]:
+        raise ValueError("Aynı banka olamaz")
     await db.payments.insert_many([out_doc, in_doc])
     return {"created_id": out_doc["id"],
             "message": f"🔄 Virman tamam: {from_bank} → {to_bank} · {amount:,.2f} {currency} (${usd_amount:,.2f})"}
@@ -253,21 +216,32 @@ async def handle_generate_pdf_statement(params: dict, user: dict, background, db
 
     # Veri çek
     if scope_type == "vendor":
+        reference = await db.vendors.find_one({"$or": [{"name": scope_value}, {"aliases": scope_value}, {"id": scope_value}]})
+        vendor_query = ({"$or": [{"vendor_id": reference["id"]}, {"vendor": {"$in": [reference["name"], *reference.get("aliases", [])]}}]} if reference else {"vendor": {"$regex": scope_value, "$options": "i"}})
         title = f"{scope_value} — Hesap Özeti"
-        payables = await db.payables.find({"vendor": {"$regex": scope_value, "$options": "i"}}, {"_id": 0}).sort("due_date", -1).to_list(200)
-        payments = await db.payments.find({"vendor": {"$regex": scope_value, "$options": "i"}}, {"_id": 0}).sort("date", -1).to_list(200)
+        payables = await db.payables.find({**APPROVED, **vendor_query}, {"_id": 0}).sort("due_date", -1).to_list(200)
+        payments = await db.payments.find({**POSTED, "is_transfer": {"$ne": True}, **vendor_query}, {"_id": 0}).sort("date", -1).to_list(200)
     elif scope_type == "ship":
         title = f"{scope_value} — Gemi Hesap Özeti"
-        payables = await db.payables.find({"ship": scope_value.upper()}, {"_id": 0}).sort("due_date", -1).to_list(500)
-        payments = await db.payments.find({"ship": scope_value.upper()}, {"_id": 0}).sort("date", -1).to_list(500)
+        payables = await db.payables.find({**APPROVED, "ship": scope_value.upper()}, {"_id": 0}).sort("due_date", -1).to_list(500)
+        payments = await db.payments.find({**POSTED, "is_transfer": {"$ne": True}, "ship": scope_value.upper()}, {"_id": 0}).sort("date", -1).to_list(500)
     else:
         raise ValueError("scope_type vendor veya ship olmalı")
 
     debt = sum(float(p.get("usd_amount", 0) or 0) for p in payables if p.get("kind") == "PAYABLE")
-    paid = sum(float(p.get("usd_amount", 0) or 0) for p in payments if p.get("type") == "TEDİYE")
-    balance = debt - paid
+    receivable = sum(float(p.get("usd_amount") or 0) for p in payables if p.get("kind") == "RECEIVABLE")
+    carrying = {}
+    for movement in payments:
+        parent = await db.payables.find_one({'id': movement.get('payable_id')}) if movement.get('payable_id') else None
+        total, book = basis(parent) if parent and parent.get('status') != 'İPTAL' else (0, 0)
+        carrying[movement['id']] = allocation(movement, parent) * book / total if total else float(movement.get('usd_amount') or 0)
+    paid = sum(carrying[p['id']] for p in payments if p.get('type') == 'TEDİYE')
+    received = sum(carrying[p['id']] for p in payments if p.get('type') == 'TAHSİL')
+    balance = debt - paid - receivable + received
 
     summary_rows = [
+        {"label": "Toplam Alacak (USD)", "value": f"${receivable:,.2f}"},
+        {"label": "Tahsil Mahsup (USD)", "value": f"${received:,.2f}"},
         {"label": "Toplam Borç (USD)", "value": f"${debt:,.2f}"},
         {"label": "Toplam Ödenen (USD)", "value": f"${paid:,.2f}"},
         {"label": "Bakiye (USD)", "value": f"${balance:,.2f}"},
@@ -278,7 +252,7 @@ async def handle_generate_pdf_statement(params: dict, user: dict, background, db
     for p in payables[:20]:
         detail_rows.append({
             "Tarih": (p.get("due_date") or "")[:10],
-            "Tip": "BORÇ",
+            "Tip": "ALACAK" if p.get("kind") == "RECEIVABLE" else "BORÇ",
             "Açıklama": (p.get("description") or p.get("expense_type") or "")[:60],
             "USD": f"${float(p.get('usd_amount', 0) or 0):,.2f}",
         })

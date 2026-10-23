@@ -1,3 +1,4 @@
+import { useAuth } from "@/contexts/AuthContext";
 import { privateValue } from "@/lib/privacy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtUSD, fmtDate, formatApiError } from "@/lib/api";
@@ -19,6 +20,9 @@ const ADD_PANEL_ID = "payable-inline-add";
  * kindProp = "PAYABLE" or "RECEIVABLE"
  */
 export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" }) {
+  const { user } = useAuth();
+  const canWrite = ["admin", "manager", "accountant", "finance", "operations"].includes(user?.role);
+  const canApprove = ["admin", "manager", "accountant"].includes(user?.role);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -105,8 +109,8 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     { key: "original_amount", label: "Tutar", type: "money", required: true, width: 130 },
     { key: "currency", label: "Para Birimi", type: "select", searchable: false, width: 120, options: masters.currencies.map((c) => c.code) },
     { key: "usd_amount", label: "USD Karşılığı", type: "money", width: 130 },
-    { key: "status", label: "Durum", type: "select", searchable: false, width: 160, options: masters.statuses.filter((s) => !["ÖDENDİ", "KISMİ ÖDEME"].includes(s.name)).map((s) => s.name) },
-  ], [masters]);
+    { key: "status", label: "Onay", type: "select", searchable: false, width: 160, options: canApprove ? ["TASLAK", "ONAY BEKLİYOR", "ONAYLANDI"] : ["TASLAK", "ONAY BEKLİYOR"] },
+  ], [masters, canApprove]);
 
   /** Vade tarihi en erken sipariş tarihi olabilir. */
   const validateAddRow = (row) => (
@@ -128,6 +132,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   };
 
   const saveNewRows = async (rows) => {
+    if (!canWrite) { toast.error("Kayıt düzenleme yetkiniz yok"); return { failed: rows.map((r) => r._id) }; }
     const results = await Promise.allSettled(rows.map((r) => {
       const amount = parseMoney(r.original_amount);
       const usd = parseMoney(r.usd_amount);
@@ -381,16 +386,22 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                 </Field>
               </div>
 
-              <Field label="Durum">
-                {["ÖDENDİ", "KISMİ ÖDEME"].includes(editing.status) ? <StatusBadge value={editing.status} /> : <SelectField testid="select-status" value={editing.status} onChange={(v) => setEditing({...editing, status: v})} options={masters.statuses.filter(s => !["ÖDENDİ", "KISMİ ÖDEME"].includes(s.name)).map(s => s.name)}/>}
-                <p className="mt-1 text-xs text-[#86868B]">Ödendi ve Kısmi Ödeme durumları, Ödeme ve Tahsilat ekranındaki hareketlerle otomatik belirlenir.</p>
+              <Field label="Belge onayı">
+                {editing.status === "İPTAL" ? <StatusBadge value="İPTAL" /> : <Select value={editing.approval_status || (editing.status === "TASLAK" ? "draft" : editing.status === "ONAY BEKLİYOR" ? "pending" : "approved")} onValueChange={(approval_status) => setEditing({ ...editing, approval_status })}>
+                  <SelectTrigger aria-label="Belge onayı" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="draft">Taslak</SelectItem><SelectItem value="pending">Onay bekliyor</SelectItem><SelectItem value="approved" disabled={!canApprove}>Onaylandı</SelectItem></SelectContent>
+                </Select>}
+              </Field>
+              <Field label="Ödeme durumu">
+                <span className="text-sm">{editing.payment_status === "paid" || editing.status === "ÖDENDİ" ? "Tamamlandı" : editing.payment_status === "partial" || editing.status === "KISMİ ÖDEME" ? "Kısmi ödeme" : "Henüz ödeme/tahsilat yok"}</span>
+                <p className="mt-1 text-xs text-[#86868B]">Ödeme durumu bağlı hareketlerden hesaplanır. Belge onayı ayrı izlenir.</p>
               </Field>
 
               {/* Dosya Ekleri (sadece edit modunda — id varsa) */}
               {editing.id && <AttachmentsBlock resource="payable" resourceId={editing.id}/>}
 
               <div className="flex gap-2 pt-4 border-t border-[#E5E5EA]">
-                <Button data-testid="btn-save" onClick={save} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg flex-1">
+                <Button disabled={!canWrite} data-testid="btn-save" onClick={save} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg flex-1">
                   {editing.id ? "Güncelle" : "Kaydet"}
                 </Button>
                 <Button variant="outline" onClick={() => setOpen(false)} className="rounded-lg">İptal</Button>
