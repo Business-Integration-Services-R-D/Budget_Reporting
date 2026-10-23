@@ -98,6 +98,12 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None, 
             category_totals = week.get("category_totals") or {name: sum(r[10 + index] for r in rows if r[0] == week["week"]) for index, name in enumerate(("BANKA", "OPERASYON", "DİĞER"))}
             rows.append([week["week"], week["start"], week["end"], None, "HAFTA TOPLAMI", None, None, None, None,
                          week["total_usd"], category_totals["BANKA"], category_totals["OPERASYON"], category_totals["DİĞER"]])
+        weekly_totals = [row for row in rows if row[4] == "HAFTA TOPLAMI"]
+        overall = {name: sum(float(row[10 + index] or 0) for row in weekly_totals)
+                   for index, name in enumerate(("BANKA", "OPERASYON", "DİĞER"))}
+        rows.append(["GENEL", None, None, None, "AY SONUNA KADAR İHTİYAÇ TOPLAMI", None, None, None, None,
+                     sum(float(week.get("total_usd", 0) or 0) for week in data["weeks"]),
+                     overall["BANKA"], overall["OPERASYON"], overall["DİĞER"]])
         return [("Ofis Ödemeleri", ["Hafta", "Başlangıç", "Bitiş", "Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "Döviz", "USD", "BANKA", "OPERASYON", "DİĞER"], rows)]
     if report_id == "all-debts":
         data = await reports._reference_report(report_id, dataset) or await reports.all_debts_data(months)
@@ -194,7 +200,7 @@ def _report_xlsx(title, tables, report_id=None):
                 ws.cell(4, column).fill = PatternFill("solid", fgColor=color)
                 ws.cell(4, column).font = Font(bold=True, color="1D1D1F")
             for row in range(5, ws.max_row + 1):
-                if ws.cell(row, 5).value == "HAFTA TOPLAMI":
+                if ws.cell(row, 5).value in {"HAFTA TOPLAMI", "AY SONUNA KADAR İHTİYAÇ TOPLAMI"}:
                     for cell in ws[row]:
                         cell.fill = PatternFill("solid", fgColor="FFF2CC")
                         cell.font = Font(bold=True)
@@ -294,7 +300,7 @@ def _report_pdf(title, tables, report_id=None):
                         column = segment_headers.index(label)
                         table.setStyle(TableStyle([("BACKGROUND", (column, 0), (column, 0), colors.HexColor(color)), ("TEXTCOLOR", (column, 0), (column, 0), colors.black)]))
                 for row_index, row in enumerate(segment_rows, start=1):
-                    if len(row) > 4 and row[4] == "HAFTA TOPLAMI":
+                    if len(row) > 4 and row[4] in {"HAFTA TOPLAMI", "AY SONUNA KADAR İHTİYAÇ TOPLAMI"}:
                         table.setStyle(TableStyle([("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#FFF2CC")), ("FONTNAME", (0, row_index), (-1, row_index), font)]))
             if report_id == "all-debts":
                 for row_index, row in enumerate(segment_rows, start=1):
