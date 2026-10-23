@@ -1,11 +1,13 @@
 """Business invariants against isolated databases, never application data."""
 from datetime import datetime, timedelta, timezone
+import io
 from unittest.mock import patch
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
 import httpx
 import uuid
 import unittest
+from openpyxl import load_workbook
 from routers import accounts, dashboard, payments, payables, reports, master, export
 import dependencies
 
@@ -185,6 +187,9 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
         cash = (await self.api.get('/api/reports/cash-report')).json()
         self.assertEqual(cash['movements'][0]['type'], 'TEDİYE')
         self.assertEqual(cash['balances'][0]['current_balance'], 9600)
+        cash_export = await self.api.get('/api/export/reports/cash-report?format=xlsx')
+        workbook = load_workbook(io.BytesIO(cash_export.content), data_only=True)
+        self.assertEqual(workbook['Hareketler']['A2'].value, 1)
         for fmt, content_type, signature in [('xlsx', 'spreadsheetml', b'PK'), ('pdf', 'application/pdf', b'%PDF')]:
             response = await self.api.get(f'/api/export/reports/office-payments?format={fmt}')
             self.assertEqual(response.status_code, 200, response.text)

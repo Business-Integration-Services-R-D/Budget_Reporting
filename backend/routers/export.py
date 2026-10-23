@@ -67,9 +67,9 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None):
     from routers import reports
     if report_id == "cash-report":
         data = await reports.cash_report_data(start, end)
-        movements = [[p.get("id"), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
+        movements = [[index, p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
             p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"),
-            p.get("amount"), p.get("usd_amount"), p.get("ship")] for p in data["movements"]]
+            p.get("amount"), p.get("usd_amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
         balances = [[b.get("name"), b.get("type"), b.get("balance_currency"), b.get("opening_balance"),
             b.get("in"), b.get("out"), b.get("current_balance")] for b in data["balances"]]
         return [("Hareketler", ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Tutar", "USD", "Masraf Merkezi"], movements),
