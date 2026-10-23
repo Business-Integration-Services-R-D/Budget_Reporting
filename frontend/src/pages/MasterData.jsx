@@ -60,6 +60,7 @@ export default function MasterData() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState("");
+  const [currencies, setCurrencies] = useState([]);
 
   const active = COLLECTIONS.find(c => c.key === activeKey);
   const tableFields = activeKey === "banks"
@@ -70,10 +71,12 @@ export default function MasterData() {
     setLoading(true);
     try {
       if (activeKey === "banks") {
-        const [{ data: definitions }, { data: balances }] = await Promise.all([
+        const [{ data: definitions }, { data: balances }, { data: currencyDefinitions }] = await Promise.all([
           api.get("/master/banks"),
           api.get("/bank-accounts"),
+          api.get("/master/currencies"),
         ]);
+        setCurrencies(currencyDefinitions);
         const balancesById = new Map(balances.map((bank) => [bank.id, bank]));
         setItems(definitions.map((definition) => ({
           ...definition,
@@ -84,6 +87,7 @@ export default function MasterData() {
       } else {
         const { data } = await api.get(`/master/${activeKey}`);
         setItems(data);
+        if (activeKey === "currencies") setCurrencies(data);
       }
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setLoading(false); }
@@ -96,7 +100,13 @@ export default function MasterData() {
     return Object.values(i).some(v => String(v || "").toLowerCase().includes(search.toLowerCase()));
   });
 
-  const openCreate = () => { setEditing(activeKey === "payment_statuses" ? { color: "neutral" } : {}); setOpen(true); };
+  const openCreate = () => {
+    const defaults = activeKey === "payment_statuses" ? { color: "neutral" }
+      : activeKey === "banks" ? { currency: currencies.some((item) => item.code === "USD") ? "USD" : currencies[0]?.code || "TL" }
+      : {};
+    setEditing(defaults);
+    setOpen(true);
+  };
   const openEdit = (item) => { setEditing({...item}); setOpen(true); };
 
   const save = async () => {
@@ -226,6 +236,22 @@ export default function MasterData() {
                         {STATUS_COLORS.map((option) => (
                           <SelectItem key={option.value} value={option.value}>
                             <StatusColor value={option.value} />
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : activeKey === "banks" && f === "currency" ? (
+                    <Select value={editing.currency || ""} onValueChange={(currency) => setEditing({ ...editing, currency })}>
+                      <SelectTrigger data-testid="select-bank-currency" aria-label="Para Birimi" className="bg-[#F5F5F7] border-0 rounded-lg">
+                        <SelectValue placeholder="Para birimi seçin" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-72">
+                        {editing.currency && !currencies.some((item) => item.code === editing.currency) && (
+                          <SelectItem value={editing.currency}>{editing.currency}</SelectItem>
+                        )}
+                        {currencies.map((item) => (
+                          <SelectItem key={item.id || item.code} value={item.code}>
+                            {item.code}{item.name ? ` · ${item.name}` : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
