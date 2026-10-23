@@ -62,30 +62,21 @@ def _write_sheet(wb, name, rows, columns):
     return ws
 
 
-async def _report_tables(report_id, start=None, end=None, months=30, user=None, dataset="reference"):
+async def _report_tables(report_id, start=None, end=None, months=30, user=None):
     """Return [(title, headers, rows)] for screen reports and both export formats."""
     from routers import reports
     if report_id == "cash-report":
-        data = await reports._reference_report(report_id, dataset) or await reports.cash_report_data(start, end)
-        if data.get("dataset") == "reference":
-            movements = [[p.get("sequence", index), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
-                p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"), p.get("amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
-            movement_headers = ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Fiili Tutar", "Masraf Merkezi"]
-        else:
-            movements = [[p.get("sequence", index), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
-                p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"),
-                p.get("amount"), p.get("usd_amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
-            movement_headers = ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Tutar", "USD", "Masraf Merkezi"]
-        if data.get("dataset") == "reference":
-            balances = [[b.get("name"), b.get("tl"), b.get("usd"), b.get("eur"), b.get("pound"), b.get("yapi_kredi"), b.get("yapi_kredi_company")] for b in data["balances"]]
-            balance_headers = ["Bakiye", "TL", "USD", "EUR", "POUND", "YAPI KREDİ", "Şirket"]
-        else:
-            balances = [[b.get("name"), b.get("type"), b.get("balance_currency"), b.get("opening_balance"), b.get("in"), b.get("out"), b.get("current_balance")] for b in data["balances"]]
-            balance_headers = ["Hesap", "Tip", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut Bakiye"]
+        data = await reports.cash_report_data(start, end)
+        movements = [[p.get("sequence", index), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
+            p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"),
+            p.get("amount"), p.get("usd_amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
+        movement_headers = ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Tutar", "USD", "Masraf Merkezi"]
+        balances = [[b.get("name"), b.get("type"), b.get("balance_currency"), b.get("opening_balance"), b.get("in"), b.get("out"), b.get("current_balance")] for b in data["balances"]]
+        balance_headers = ["Hesap", "Tip", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut Bakiye"]
         return [("Hareketler", movement_headers, movements),
                 ("Hesap Bakiyeleri", balance_headers, balances)]
     if report_id == "office-payments":
-        data = await reports._reference_report(report_id, dataset) or await reports.office_payments_data(start, end)
+        data = await reports.office_payments_data(start, end)
         rows = []
         for week in data["weeks"]:
             for p in week["rows"]:
@@ -106,12 +97,7 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None, 
                      overall["BANKA"], overall["OPERASYON"], overall["DİĞER"]])
         return [("Ofis Ödemeleri", ["Hafta", "Başlangıç", "Bitiş", "Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "Döviz", "USD", "BANKA", "OPERASYON", "DİĞER"], rows)]
     if report_id == "all-debts":
-        data = await reports._reference_report(report_id, dataset) or await reports.all_debts_data(months)
-        if data.get("dataset") == "reference":
-            headers = ["Grup", "Açıklama/Firma", "Gemi", "Borç Türü", "Toplam USD", *data["months"]]
-            rows = [[p["description"] if p.get("is_total") else p.get("group"), p.get("description"), p.get("ship"), p.get("debt_type"), p.get("total"),
-                     *[p.get("monthly", {}).get(month, 0) for month in data["months"]]] for p in data["rows"]]
-            return [("Tüm Borçlar", headers, rows)]
+        data = await reports.all_debts_data(months)
         headers = ["Grup", "Açıklama/Firma", "Gemi", "Borç Türü", "Vade", "Vadesi Geçmiş", "Toplam USD", *data["months"]]
         rows = []
         for group in sorted({p["group"] for p in data["rows"]}):
@@ -435,12 +421,12 @@ async def export_excel(user: dict = Depends(get_current_user)):
 
 @router.get("/reports/{report_id}")
 async def export_report(report_id: str, format: str = "xlsx", start: str | None = None,
-                        end: str | None = None, months: int = 30, dataset: str = "reference",
+                        end: str | None = None, months: int = 30,
                         user: dict = Depends(get_current_user)):
     """Download any report as a styled XLSX or printable PDF."""
     if format not in {"xlsx", "pdf"}:
         raise HTTPException(400, "Format xlsx veya pdf olmalıdır.")
-    tables = await _report_tables(report_id, start, end, months, user, dataset)
+    tables = await _report_tables(report_id, start, end, months, user)
     title = REPORT_NAMES.get(report_id, report_id)
     stream = _report_xlsx(title, tables, report_id) if format == "xlsx" else _report_pdf(title, tables, report_id)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")

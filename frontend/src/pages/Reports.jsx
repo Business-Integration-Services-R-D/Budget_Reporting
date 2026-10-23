@@ -37,11 +37,9 @@ export default function Reports() {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [months, setMonths] = useState("30");
-  const [dataset, setDataset] = useState("reference");
 
   const query = () => {
     const params = new URLSearchParams();
-    if (["cash-report", "office-payments", "all-debts"].includes(selected.id)) params.set("dataset", dataset);
     if (["cash-report", "office-payments"].includes(selected.id)) {
       if (start) params.set("start", start);
       if (end) params.set("end", end);
@@ -63,7 +61,7 @@ export default function Reports() {
       finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [selected, start, end, months, dataset]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected, start, end, months]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const download = async (format) => {
     setExporting(format);
@@ -93,7 +91,6 @@ export default function Reports() {
             <Button className="rounded-lg gap-1.5 bg-[#111] text-white" onClick={() => download("pdf")} disabled={!!exporting}>{exporting === "pdf" ? <Loader2 className="w-4 h-4 animate-spin"/> : <FileDown className="w-4 h-4"/>} PDF</Button>
           </div>
         </div>
-        {["cash-report", "office-payments", "all-debts"].includes(selected.id) && <div className="px-4 sm:px-6 py-3 border-b border-[#E5E5EA]/50 flex gap-3 items-center"><span className="text-xs text-[#86868B]">Veri seti</span><select aria-label="Veri seti" value={dataset} onChange={e => setDataset(e.target.value)} className="h-9 rounded-lg border border-[#E5E5EA] bg-white px-3 text-sm"><option value="reference">Kaynak PDF Verisi</option><option value="live">Canlı Sistem Verisi</option></select></div>}
         {["cash-report", "office-payments"].includes(selected.id) && <div className="px-4 sm:px-6 py-3 border-b border-[#E5E5EA]/50 flex gap-3 items-center">
           <span className="text-xs text-[#86868B]">Tarih aralığı</span><Input type="date" aria-label="Başlangıç" value={start} onChange={e => setStart(e.target.value)} className="h-9 w-40"/><Input type="date" aria-label="Bitiş" value={end} onChange={e => setEnd(e.target.value)} className="h-9 w-40"/>
         </div>}
@@ -119,13 +116,13 @@ const ReportRenderer = ({ report, data }) => {
   if (empty) return <EmptyState icon={FileBarChart2} title="Veri yok" message="Bu rapor için henüz veri yok."/>;
   if (report === "cash-report") return <div className="space-y-8 min-w-[720px]">
     <section><h4 className="font-semibold mb-3">Hareketler</h4><SimpleTable headers={["Tarih", "Tip", "Açıklama", "Hesap", "Tutar", "USD"]} rows={data.movements.map(p => [p.date, p.type, p.description || p.vendor || "—", p.payment_method || "—", `${p.amount?.toLocaleString("tr-TR")} ${p.currency}`, fmtUSD(p.usd_amount)])}/></section>
-    <section><h4 className="font-semibold mb-3">Hesap Bakiyeleri</h4>{data.dataset === "reference" ? <SimpleTable headers={["Hesap", "TL", "USD", "EUR", "POUND", "Yapı Kredi", "Şirket"]} rows={data.balances.map(b => [b.name, b.tl, b.usd, b.eur, b.pound, b.yapi_kredi, b.yapi_kredi_company])}/> : <SimpleTable headers={["Hesap", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut"]} rows={data.balances.map(b => [b.name, b.balance_currency, b.opening_balance?.toLocaleString("tr-TR"), fmtUSD(b.in), fmtUSD(b.out), `${b.current_balance?.toLocaleString("tr-TR")} ${b.balance_currency}`])}/>}</section>
+    <section><h4 className="font-semibold mb-3">Hesap Bakiyeleri</h4><SimpleTable headers={["Hesap", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut"]} rows={data.balances.map(b => [b.name, b.balance_currency, b.opening_balance?.toLocaleString("tr-TR"), fmtUSD(b.in), fmtUSD(b.out), `${b.current_balance?.toLocaleString("tr-TR")} ${b.balance_currency}`])}/></section>
   </div>;
   if (report === "office-payments") return <div className="space-y-6 min-w-[760px]">{data.weeks.map(week => <section key={week.week}>
     <div className="flex justify-between mb-2"><h4 className="font-semibold">{week.start} – {week.end}</h4><span className="font-semibold">{fmtUSD(week.total_usd)}</span></div>
     <SimpleTable headers={["Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "USD", "Sınıf"]} rows={week.rows.map(p => [p.date, p.description, p.vendor || "—", p.company_ship, `${p.amount?.toLocaleString("tr-TR")} ${p.currency}`, fmtUSD(p.usd_amount), <CategoryBadge value={p.budget_category}/>])}/>
   </section>)}<div className="rounded-xl bg-[#FFF8DC] px-4 py-3 flex justify-between font-semibold"><span>Ay sonuna kadar ihtiyaç toplamı</span><span>{fmtUSD(data.weeks.reduce((sum, week) => sum + Number(week.total_usd || 0), 0))}</span></div></div>;
-  if (report === "all-debts") return <div className="min-w-max"><table className="text-xs"><thead className="bg-[#FAFAFA]"><tr><Head>Grup</Head><Head>Açıklama/Firma</Head><Head>Gemi</Head><Head>Tür</Head>{data.dataset !== "reference" && <Head right>Geçmiş</Head>}<Head right>Toplam</Head>{data.months.map(m => <Head key={m} right>{m}</Head>)}</tr></thead><tbody>{data.rows.map((p, index) => <tr key={p.id || index} className={`border-b border-[#F5F5F7] ${p.is_total ? "bg-[#EAF3FA] font-semibold" : ""}`}><Cell>{p.group}</Cell><Cell>{p.description}</Cell><Cell>{p.ship}</Cell><Cell>{p.debt_type}</Cell>{data.dataset !== "reference" && <Cell right>{fmtUSD(p.overdue)}</Cell>}<Cell right>{fmtUSD(p.total)}</Cell>{data.months.map(m => <Cell key={m} right>{p.monthly[m] ? fmtUSD(p.monthly[m]) : "—"}</Cell>)}</tr>)}</tbody></table></div>;
+  if (report === "all-debts") return <div className="min-w-max"><table className="text-xs"><thead className="bg-[#FAFAFA]"><tr><Head>Grup</Head><Head>Açıklama/Firma</Head><Head>Gemi</Head><Head>Tür</Head><Head right>Geçmiş</Head><Head right>Toplam</Head>{data.months.map(m => <Head key={m} right>{m}</Head>)}</tr></thead><tbody>{data.rows.map((p, index) => <tr key={p.id || index} className="border-b border-[#F5F5F7]"><Cell>{p.group}</Cell><Cell>{p.description}</Cell><Cell>{p.ship}</Cell><Cell>{p.debt_type}</Cell><Cell right>{fmtUSD(p.overdue)}</Cell><Cell right>{fmtUSD(p.total)}</Cell>{data.months.map(m => <Cell key={m} right>{p.monthly[m] ? fmtUSD(p.monthly[m]) : "—"}</Cell>)}</tr>)}</tbody></table></div>;
   if (report === "by-ship-detail") return <SimpleTable headers={["Gemi", "Toplam Borç", "Ödenen", "Açık", "Kayıt"]} rows={data.map(r => [r._id || "—", fmtUSD(r.total_debt), fmtUSD(r.paid), fmtUSD(r.open), privateValue(r.count)])}/>;
   if (report === "aging") return <SimpleTable headers={["Vade Grubu", "Toplam", "Kayıt"]} rows={data.map(r => [r.bucket, fmtUSD(r.total), privateValue(r.count)])}/>;
   if (report === "monthly-projection") return <SimpleTable headers={["Ay", "Toplam", "Kayıt"]} rows={data.map(r => [r.month, fmtUSD(r.total), privateValue(r.count)])}/>;

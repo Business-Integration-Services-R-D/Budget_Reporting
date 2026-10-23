@@ -196,26 +196,6 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(content_type, response.headers['content-type'])
             self.assertTrue(response.content.startswith(signature))
 
-    async def test_reference_report_snapshot_is_exported_without_affecting_live_data(self):
-        await self.db.report_snapshots.insert_one({
-            'report_id': 'cash-report',
-            'movements': [{'sequence': 32572, 'type': 'TAHSİL', 'date': '2026-07-31',
-                           'description': 'Kaynak hareket', 'payment_method': 'YKB',
-                           'paying_company': 'VICTORIA', 'currency': 'USD', 'fx_rate': 1,
-                           'amount': 21000, 'usd_amount': 21000, 'ship': 'VICTORIA'}],
-            'balances': [{'name': 'AKBANK', 'tl': '265.54 ₺', 'usd': '-', 'eur': '-',
-                          'pound': '-', 'yapi_kredi': '3,093.63', 'yapi_kredi_company': 'MARTI'}],
-        })
-        source = (await self.api.get('/api/reports/cash-report?dataset=reference')).json()
-        live = (await self.api.get('/api/reports/cash-report?dataset=live')).json()
-        self.assertEqual(source['dataset'], 'reference')
-        self.assertEqual(source['movements'][0]['sequence'], 32572)
-        self.assertEqual(live['movements'], [])
-        exported = await self.api.get('/api/export/reports/cash-report?dataset=reference&format=xlsx')
-        workbook = load_workbook(io.BytesIO(exported.content), data_only=True)
-        self.assertEqual(workbook.sheetnames, ['Hareketler'])
-        self.assertEqual(workbook['Hareketler']['A5'].value, 32572)
-
     async def test_vendor_rename_keeps_old_and_new_transactions_together(self):
         p = await self.debt()
         await self.api.put('/api/master/vendors/vendor', json={'name': 'Yeni Firma'})
