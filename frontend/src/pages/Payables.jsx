@@ -1,3 +1,5 @@
+import { useAuth } from "@/contexts/AuthContext";
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, fmtUSD, fmtDate, formatApiError } from "@/lib/api";
 import { Page, Card, StatusBadge, EmptyState } from "@/components/Primitives";
@@ -18,6 +20,9 @@ const ADD_PANEL_ID = "payable-inline-add";
  * kindProp = "PAYABLE" or "RECEIVABLE"
  */
 export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" }) {
+  const { user } = useAuth();
+  const canWrite = ["admin", "manager", "accountant", "finance", "operations"].includes(user?.role);
+  const canApprove = ["admin", "manager", "accountant"].includes(user?.role);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -27,7 +32,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   const [statusFilter, setStatusFilter] = useState("all");
   const [shipFilter, setShipFilter] = useState("all");
 
-  const [masters, setMasters] = useState({ ships: [], vendors: [], expense_types: [], currencies: [], statuses: [], armators: [], companies: [], people: [], countries: [] });
+  const [masters, setMasters] = useState({ ships: [], vendors: [], expense_types: [], budget_categories: [], currencies: [], statuses: [], armators: [], companies: [], people: [], countries: [] });
   const [fxRates, setFxRates] = useState([]);
   const addPanelRef = useRef(null);
 
@@ -51,14 +56,15 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
 
   useEffect(() => {
     (async () => {
-      const [ships, vendors, expTypes, currencies, statuses, armators, companies, people, countries, fx] = await Promise.all([
+      const [ships, vendors, expTypes, budgetCategories, currencies, statuses, armators, companies, people, countries, fx] = await Promise.all([
         api.get("/master/ships"), api.get("/master/vendors"), api.get("/master/expense_types"),
+        api.get("/master/budget_categories"),
         api.get("/master/currencies"), api.get("/master/payment_statuses"), api.get("/master/armators"),
         api.get("/master/companies"), api.get("/master/people"), api.get("/master/countries"),
         api.get("/fx/latest"),
       ]);
       setMasters({
-        ships: ships.data, vendors: vendors.data, expense_types: expTypes.data,
+        ships: ships.data, vendors: vendors.data, expense_types: expTypes.data, budget_categories: budgetCategories.data,
         currencies: currencies.data, statuses: statuses.data, armators: armators.data,
         companies: companies.data, people: people.data, countries: countries.data,
       });
@@ -83,6 +89,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     ship: "",
     armator: "",
     expense_type: "",
+    budget_category: "DİĞER",
     expense_code: "",
     country: "",
     description: "",
@@ -99,13 +106,14 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
     { key: "ship", label: "Gemi / Birim", type: "select", width: 160, options: masters.ships.map((s) => s.name) },
     { key: "armator", label: "Armatör", type: "select", width: 160, options: masters.armators.map((a) => a.name) },
     { key: "expense_type", label: "Masraf Türü", type: "select", width: 170, options: masters.expense_types.map((e) => e.name) },
+    { key: "budget_category", label: "Bütçe Sınıfı", type: "select", width: 150, options: masters.budget_categories.map((e) => e.name) },
     { key: "country", label: "Ülke", type: "select", width: 150, options: masters.countries.map((c) => c.name) },
     { key: "description", label: "Açıklama", type: "text", placeholder: "Açıklama giriniz…", width: 200 },
     { key: "original_amount", label: "Tutar", type: "money", required: true, width: 130 },
     { key: "currency", label: "Para Birimi", type: "select", searchable: false, width: 120, options: masters.currencies.map((c) => c.code) },
     { key: "usd_amount", label: "USD Karşılığı", type: "money", width: 130 },
-    { key: "status", label: "Durum", type: "select", searchable: false, width: 160, options: masters.statuses.map((s) => s.name) },
-  ], [masters]);
+    { key: "status", label: "Onay", type: "select", searchable: false, width: 160, options: canApprove ? ["TASLAK", "ONAY BEKLİYOR", "ONAYLANDI"] : ["TASLAK", "ONAY BEKLİYOR"] },
+  ], [masters, canApprove]);
 
   /** Vade tarihi en erken sipariş tarihi olabilir. */
   const validateAddRow = (row) => (
@@ -127,6 +135,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   };
 
   const saveNewRows = async (rows) => {
+    if (!canWrite) { toast.error("Kayıt düzenleme yetkiniz yok"); return { failed: rows.map((r) => r._id) }; }
     const results = await Promise.allSettled(rows.map((r) => {
       const amount = parseMoney(r.original_amount);
       const usd = parseMoney(r.usd_amount);
@@ -138,6 +147,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
         ship: r.ship || null,
         armator: r.armator || null,
         expense_type: r.expense_type || null,
+        budget_category: r.budget_category || "DİĞER",
         expense_code: r.expense_code || null,
         country: r.country || null,
         description: r.description.trim() || null,
@@ -162,7 +172,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
 
   const summary = useMemo(() => {
     const total = items.reduce((s, i) => s + (i.usd_amount || 0), 0);
-    const open = items.filter(i => !["ÖDENDİ", "İPTAL"].includes(i.status)).reduce((s, i) => s + (i.usd_amount || 0), 0);
+    const open = items.filter(i => !["ÖDENDİ", "İPTAL"].includes(i.status)).reduce((s, i) => s + (i.remaining_usd ?? i.usd_amount ?? 0), 0);
     return { total, open, count: items.length };
   }, [items]);
 
@@ -191,7 +201,7 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
   return (
     <Page
       title={title}
-      subtitle={`${summary.count} kayıt · Açık: ${fmtUSD(summary.open)}`}
+      subtitle={`${privateValue(summary.count)} kayıt · Açık: ${fmtUSD(summary.open)}`}
       actions={
         <InlineAddToggle
           testId="btn-new-payable"
@@ -288,8 +298,8 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                     <td className="px-4 py-3 text-[#1D1D1F] max-w-xs truncate">{p.vendor || "—"}</td>
                     <td className="px-4 py-3 text-[#3A3A3C]">{p.ship || "—"}</td>
                     <td className="px-4 py-3 text-[#3A3A3C] text-xs">{p.expense_type || "—"}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-[#1D1D1F]">{p.original_amount?.toLocaleString("tr-TR")} <span className="text-[#86868B]">{p.currency}</span></td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium text-[#1D1D1F]">{fmtUSD(p.usd_amount)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-[#1D1D1F]">{privateValue(p.original_amount?.toLocaleString("tr-TR"))} <span className="text-[#86868B]">{p.currency}</span></td>
+                    <td className="px-4 py-3 text-right tabular-nums font-medium text-[#1D1D1F]">{fmtUSD(p.usd_amount)}{p.remaining_usd != null && <div className="text-xs font-normal text-[#86868B]">Kalan {fmtUSD(p.remaining_usd)}</div>}</td>
                     <td className="px-4 py-3"><StatusBadge value={p.status}/></td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -359,6 +369,9 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                     setEditing({...editing, expense_type: v, expense_code: item?.code});
                   }} options={masters.expense_types.map(e => e.name)}/>
                 </Field>
+                <Field label="Bütçe Sınıfı">
+                  <SelectField testid="select-budget-category" value={editing.budget_category || "DİĞER"} onChange={(v) => setEditing({...editing, budget_category: v})} options={masters.budget_categories.map(e => e.name)}/>
+                </Field>
                 <Field label="Ülke">
                   <SelectField testid="select-country" value={editing.country} onChange={(v) => setEditing({...editing, country: v})} options={masters.countries.map(c => c.name)}/>
                 </Field>
@@ -380,15 +393,22 @@ export default function PayablesPage({ kindProp = "PAYABLE", title = "Borçlar" 
                 </Field>
               </div>
 
-              <Field label="Durum">
-                <SelectField testid="select-status" value={editing.status} onChange={(v) => setEditing({...editing, status: v})} options={masters.statuses.map(s => s.name)}/>
+              <Field label="Belge onayı">
+                {editing.status === "İPTAL" ? <StatusBadge value="İPTAL" /> : <Select value={editing.approval_status || (editing.status === "TASLAK" ? "draft" : editing.status === "ONAY BEKLİYOR" ? "pending" : "approved")} onValueChange={(approval_status) => setEditing({ ...editing, approval_status })}>
+                  <SelectTrigger aria-label="Belge onayı" className="bg-[#F5F5F7] border-0 rounded-lg"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="draft">Taslak</SelectItem><SelectItem value="pending">Onay bekliyor</SelectItem><SelectItem value="approved" disabled={!canApprove}>Onaylandı</SelectItem></SelectContent>
+                </Select>}
+              </Field>
+              <Field label="Ödeme durumu">
+                <span className="text-sm">{editing.payment_status === "paid" || editing.status === "ÖDENDİ" ? "Tamamlandı" : editing.payment_status === "partial" || editing.status === "KISMİ ÖDEME" ? "Kısmi ödeme" : "Henüz ödeme/tahsilat yok"}</span>
+                <p className="mt-1 text-xs text-[#86868B]">Ödeme durumu bağlı hareketlerden hesaplanır. Belge onayı ayrı izlenir.</p>
               </Field>
 
               {/* Dosya Ekleri (sadece edit modunda — id varsa) */}
               {editing.id && <AttachmentsBlock resource="payable" resourceId={editing.id}/>}
 
               <div className="flex gap-2 pt-4 border-t border-[#E5E5EA]">
-                <Button data-testid="btn-save" onClick={save} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg flex-1">
+                <Button disabled={!canWrite} data-testid="btn-save" onClick={save} className="bg-[#111111] hover:bg-[#2C2C2E] text-white rounded-lg flex-1">
                   {editing.id ? "Güncelle" : "Kaydet"}
                 </Button>
                 <Button variant="outline" onClick={() => setOpen(false)} className="rounded-lg">İptal</Button>

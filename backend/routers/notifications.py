@@ -2,6 +2,7 @@
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, BackgroundTasks
 from database import db
+from finance import OPEN
 from dependencies import get_current_user, _uid, _now
 from email_service import send_payment_reminder
 
@@ -39,8 +40,7 @@ async def check_due_reminders(background: BackgroundTasks, user: dict = Depends(
     for delta in days_thresholds:
         target_date = (today + timedelta(days=delta)).isoformat()
         payables = await db.payables.find({
-            "kind": "PAYABLE",
-            "status": {"$nin": ["ÖDENDİ", "İPTAL"]},
+            **OPEN, "kind": "PAYABLE",
             "due_date": target_date
         }, {"_id": 0}).to_list(200)
         for p in payables:
@@ -48,7 +48,7 @@ async def check_due_reminders(background: BackgroundTasks, user: dict = Depends(
             if existing:
                 continue
             title = f"Vade {'yaklaşıyor' if delta > 0 else 'geldi/geçti'}: {p.get('vendor', '?')}"
-            msg = f"{p.get('vendor')} - {p.get('description', '')} - {p.get('usd_amount', 0):.2f} USD - Vade: {p.get('due_date')}"
+            msg = f"{p.get('vendor')} - {p.get('description', '')} - {p.get('remaining_usd', p.get('usd_amount', 0)):.2f} USD - Vade: {p.get('due_date')}"
             await db.notifications.insert_one({
                 "id": _uid(),
                 "type": "due_reminder",
@@ -57,7 +57,7 @@ async def check_due_reminders(background: BackgroundTasks, user: dict = Depends(
                 "resource": "payable",
                 "resource_id": p["id"],
                 "user_id": None,
-                "meta": {"days_until": delta, "amount": p.get("usd_amount", 0)},
+                "meta": {"days_until": delta, "amount": p.get("remaining_usd", p.get("usd_amount", 0))},
                 "read": False,
                 "created_at": _now(),
             })

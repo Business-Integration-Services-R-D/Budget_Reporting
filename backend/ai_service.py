@@ -5,7 +5,12 @@ import base64
 import logging
 import re
 from typing import List, Optional, Any
-from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+try:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+except ModuleNotFoundError as exc:
+    if exc.name != "emergentintegrations":
+        raise
+    LlmChat = UserMessage = FileContentWithMimeType = None
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ def _safe_json(text: str) -> dict:
 
 async def ocr_invoice(file_path: str, mime_type: str = "image/jpeg") -> dict:
     """Bir fatura görselini OCR ile yapılandırılmış JSON'a çevirir."""
-    if not API_KEY:
+    if not API_KEY or LlmChat is None:
         return {"error": "AI servisi yapılandırılmamış"}
     chat = _new_chat(session_id=f"ocr-{os.path.basename(file_path)}", system_message=OCR_SYSTEM)
     file_content = FileContentWithMimeType(file_path=file_path, mime_type=mime_type)
@@ -213,7 +218,7 @@ async def chat_with_assistant(session_id: str, user_text: str, context_stats: di
        - {"type": "text", "content": "..."} → düz cevap
        - {"type": "action", "action": "...", "params": {...}, "summary": "..."} → kullanıcıdan onay bekleyen aksiyon
     """
-    if not API_KEY:
+    if not API_KEY or LlmChat is None:
         return {"type": "text", "content": "AI servisi yapılandırılmamış. Lütfen sistem yöneticisine başvurun."}
     context_text = _build_context(context_stats)
     full_system = ASSISTANT_SYSTEM + "\n\n# GÜNCEL FİNANSAL VERİ\n\n" + context_text

@@ -1,3 +1,5 @@
+import { PrivateChart as ResponsiveContainer } from "@/components/PrivateChart";
+import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtUSD, fmtDate } from "@/lib/api";
@@ -9,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid, Legend
+  Tooltip, XAxis, YAxis, CartesianGrid, Legend
 } from "recharts";
 
 const ChartColors = ["#111111", "#86868B", "#007AFF", "#1F8942", "#B26205", "#D92D20"];
@@ -50,10 +52,10 @@ export default function Dashboard() {
   const kpis = [
     { label: "Açık Borç", value: kpi?.open_payable?.total, count: kpi?.open_payable?.count, icon: ArrowDownToLine, accent: "#D92D20" },
     { label: "Açık Alacak", value: kpi?.open_receivable?.total, count: kpi?.open_receivable?.count, icon: ArrowUpFromLine, accent: "#1F8942" },
-    { label: "Net Pozisyon", value: kpi?.net_position, count: null, icon: TrendingUp, accent: "#007AFF", isNet: true },
+    { label: "Net Nakit Hareketi", value: kpi?.net_position, count: null, icon: TrendingUp, accent: "#007AFF", isNet: true },
     { label: "Vadesi Geçmiş", value: kpi?.overdue?.total, count: kpi?.overdue?.count, icon: AlertCircle, accent: "#D92D20" },
-    { label: "Bu Hafta", value: kpi?.week_due?.total, count: kpi?.week_due?.count, icon: CalendarClock, accent: "#B26205" },
-    { label: "Bu Ay", value: kpi?.month_due?.total, count: kpi?.month_due?.count, icon: Calendar, accent: "#86868B" },
+    { label: "Önümüzdeki 7 Gün", value: kpi?.week_due?.total, count: kpi?.week_due?.count, icon: CalendarClock, accent: "#B26205", isNet: true, detail: `Tahsilat ${fmtUSD(kpi?.week_due?.receivable)} · Ödeme ${fmtUSD(kpi?.week_due?.payable)}` },
+    { label: "Önümüzdeki 30 Gün", value: kpi?.month_due?.total, count: kpi?.month_due?.count, icon: Calendar, accent: "#86868B", isNet: true, detail: `Tahsilat ${fmtUSD(kpi?.month_due?.receivable)} · Ödeme ${fmtUSD(kpi?.month_due?.payable)}` },
   ];
 
   return (
@@ -86,11 +88,13 @@ export default function Dashboard() {
               <Skeleton className="h-7 sm:h-8 w-20 sm:w-24" />
             ) : (
               <div className="tabular-nums">
-                <div className={`text-lg sm:text-2xl font-semibold tracking-tight ${k.isNet && k.value < 0 ? "text-[#D92D20]" : "text-[#1D1D1F]"}`}>
-                  {fmtUSD(k.value)}
+                <div className={`text-lg sm:text-2xl font-semibold tracking-tight ${k.isNet && k.value < 0 ? "text-[#D92D20]" : k.isNet && k.value > 0 ? "text-[#1F8942]" : "text-[#1D1D1F]"}`}>
+                  {fmtUSD(k.value, k.isNet)}
                 </div>
+                {k.detail ? <div className="mt-0.5 text-[9px] sm:text-[10px] text-[#86868B] leading-tight">{k.detail}</div>
+                  : k.isNet && <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">Tahsilat − Ödeme</div>}
                 {k.count !== null && (
-                  <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">{k.count || 0} kayıt</div>
+                  <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">{privateValue(k.count || 0)} kayıt</div>
                 )}
               </div>
             )}
@@ -209,7 +213,7 @@ export default function Dashboard() {
             {fx.map((f, i) => (
               <div key={i} className="flex items-center justify-between py-1.5 border-b border-[#F5F5F7] last:border-0">
                 <span className="text-sm font-medium text-[#1D1D1F]">{f.code}</span>
-                <span className="text-sm tabular-nums text-[#1D1D1F]">{(f.rate_to_tl || 0).toFixed(4)} ₺</span>
+                <span className="text-sm tabular-nums text-[#1D1D1F]">{privateValue((f.rate_to_tl || 0).toFixed(4))} ₺</span>
               </div>
             ))}
           </div>
@@ -222,13 +226,13 @@ export default function Dashboard() {
           <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50 flex items-center justify-between">
             <div>
               <h3 className="text-base font-medium text-[#1D1D1F]">Vadesi Yaklaşan</h3>
-              <p className="text-xs text-[#86868B] mt-0.5">Sonraki 30 gün</p>
+              <p className="text-xs text-[#86868B] mt-0.5">Sonraki 30 gün · Borç ve alacak</p>
             </div>
             <CalendarClock className="w-5 h-5 text-[#A1A1A6]" strokeWidth={1.5}/>
           </div>
           <div className="divide-y divide-[#F5F5F7]">
             {upcoming.length === 0 && (
-              <div className="px-4 sm:px-6 py-12 text-center text-sm text-[#86868B]">Yaklaşan borç yok</div>
+              <div className="px-4 sm:px-6 py-12 text-center text-sm text-[#86868B]">Yaklaşan borç veya alacak yok</div>
             )}
             {upcoming.slice(0, 8).map((p, i) => (
               <div key={i} className="px-4 sm:px-6 py-3 flex items-center justify-between hover:bg-[#FAFAFA] transition" data-testid={`upcoming-${i}`}>
@@ -237,7 +241,8 @@ export default function Dashboard() {
                   <div className="text-xs text-[#86868B] truncate">{p.description || p.ship || ""} · {fmtDate(p.due_date)}</div>
                 </div>
                 <div className="ml-3 text-right">
-                  <div className="text-sm font-semibold tabular-nums text-[#1D1D1F]">{fmtUSD(p.usd_amount)}</div>
+                  <div className={`text-sm font-semibold tabular-nums ${p.kind === "RECEIVABLE" ? "text-[#1F8942]" : "text-[#D92D20]"}`}>{p.kind === "RECEIVABLE" ? "+" : "−"}{fmtUSD(p.remaining_usd ?? p.usd_amount)}</div>
+                  <div className="text-[10px] text-[#86868B] mb-1">{p.kind === "RECEIVABLE" ? "Tahsilat" : "Ödeme"}</div>
                   <StatusBadge value={p.status}/>
                 </div>
               </div>
@@ -266,7 +271,7 @@ export default function Dashboard() {
                   </div>
                   <div className="text-xs text-[#86868B] truncate mt-1">{p.payment_method || ""} · {fmtDate(p.date)}</div>
                 </div>
-                <div className="ml-3 text-sm font-semibold tabular-nums text-[#1D1D1F]">{fmtUSD(p.usd_amount)}</div>
+                <div className="ml-3 text-sm font-semibold tabular-nums text-[#1D1D1F]">{fmtUSD(p.remaining_usd ?? p.usd_amount)}</div>
               </div>
             ))}
           </div>

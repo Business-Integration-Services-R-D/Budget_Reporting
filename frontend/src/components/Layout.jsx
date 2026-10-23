@@ -1,3 +1,4 @@
+import { HIDE_NUMBERS, privateValue } from "@/lib/privacy";
 import { Link, NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, ArrowDownToLine, ArrowUpFromLine, CreditCard, Wallet,
@@ -12,7 +13,7 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/payables", label: "Borçlar", icon: ArrowDownToLine },
   { to: "/receivables", label: "Alacaklar", icon: ArrowUpFromLine },
-  { to: "/payments", label: "Ödemeler", icon: CreditCard },
+  { to: "/payments", label: "Ödeme ve Tahsilat", icon: CreditCard },
   { to: "/cash-bank", label: "Kasa & Banka", icon: Wallet },
   { to: "/current-accounts", label: "Cari Hesaplar", icon: Users },
   { to: "/reports", label: "Raporlar", icon: FileBarChart2 },
@@ -212,7 +213,7 @@ export default function Layout() {
             <BellRing className="w-5 h-5 text-[#3A3A3C]" strokeWidth={1.5} />
             {notifCount > 0 && (
               <span className="absolute top-1 right-1 min-w-[18px] h-[18px] px-1 grid place-items-center text-[10px] font-semibold bg-[#D92D20] text-white rounded-full">
-                {notifCount > 99 ? "99+" : notifCount}
+                {privateValue(notifCount > 99 ? "99+" : notifCount)}
               </span>
             )}
           </button>
@@ -230,6 +231,7 @@ export default function Layout() {
 
         {/* Content */}
         <main className="flex-1 overflow-auto p-4 sm:p-6 lg:p-8 animate-fade-in-up">
+          {HIDE_NUMBERS && <p role="status" className="mb-4 text-xs text-[#86868B]">Gizli görünüm · Tutarlar ve miktarlar gizlendi. Veriler korunuyor.</p>}
           <Outlet />
         </main>
       </div>

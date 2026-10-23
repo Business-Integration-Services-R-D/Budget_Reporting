@@ -1,9 +1,12 @@
 """Payments router."""
-from typing import Optional
-from fastapi import APIRouter, Depends
+from typing import Optional, Literal
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from database import db
-from dependencies import get_current_user, write_audit, _uid, _now
+from dependencies import require_finance, get_current_user, write_audit, _uid, _now
+
+from finance import POSTED
+from settlements import settlement_lock, prepare_payment, sync_payable, normalize_payment_amount
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -23,7 +26,10 @@ class PaymentInput(BaseModel):
     currency: Optional[str] = "USD"
     fx_rate: Optional[float] = 1
     usd_amount: Optional[float] = 0
-    approved: Optional[bool] = False
+    approved: Optional[bool] = True
+    posting_status: Literal["draft", "posted"] = "posted"
+    bank_account_id: Optional[str] = None
+    vendor_id: Optional[str] = None
 
 
 @router.get("")
@@ -34,9 +40,10 @@ async def list_payments(
     company: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = 1000,
+    include_voided: bool = False,
     user: dict = Depends(get_current_user),
 ):
-    q: dict = {}
+    q: dict = {} if include_voided else {"voided": {"$ne": True}}
     if type: q["type"] = type
     if bank: q["payment_method"] = bank
     if ship: q["ship"] = ship
@@ -50,52 +57,109 @@ async def list_payments(
 
 
 @router.post("")
-async def create_payment(body: PaymentInput, user: dict = Depends(get_current_user)):
+async def create_payment(body: PaymentInput, user: dict = Depends(require_finance)):
+    return await create_payment_record(db, body, user)
+
+
+async def create_payment_record(store, body: PaymentInput, user: dict):
+    db = store
+    await require_finance(user)
     doc = body.model_dump()
     doc["id"] = _uid()
     doc["created_at"] = _now()
     doc["created_by"] = user["email"]
-    if not doc.get("usd_amount") and doc.get("amount") and doc.get("fx_rate"):
-        try:
-            if (doc.get("currency") or "").upper() == "USD":
-                doc["usd_amount"] = float(doc["amount"])
-            else:
-                usd = await db.currencies.find_one({"code": "USD"}, {"_id": 0})
-                usd_rate = (usd or {}).get("rate_to_tl", 0) or 1
-                tl_value = float(doc["amount"]) * float(doc["fx_rate"])
-                doc["usd_amount"] = tl_value / usd_rate if usd_rate else 0
-        except Exception:
-            pass
-    await db.payments.insert_one(doc)
-
-    if doc.get("payable_id"):
-        payable = await db.payables.find_one({"id": doc["payable_id"]}, {"_id": 0})
-        if payable:
-            paid_sum = await db.payments.aggregate([
-                {"$match": {"payable_id": doc["payable_id"]}},
-                {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}}}
-            ]).to_list(1)
-            total_paid = (paid_sum[0]["total"] if paid_sum else 0)
-            target = payable.get("usd_amount", 0)
-            new_status = "ÖDENDİ" if total_paid >= (target - 0.01) else "KISMİ ÖDEME"
-            await db.payables.update_one({"id": doc["payable_id"]}, {"$set": {"status": new_status, "updated_at": _now()}})
+    if "posting_status" not in body.model_fields_set and body.approved is False:
+        doc["posting_status"] = "draft"
+    doc["approved"] = doc["posting_status"] == "posted"
+    for field in ("voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to", "is_offset", "offset_group_id"):
+        doc.pop(field, None)
+    await normalize_payment_amount(db, doc)
+    async with settlement_lock(doc.get("payable_id")):
+        await prepare_payment(db, doc)
+        await db.payments.insert_one(doc)
+        await sync_payable(db, doc.get("payable_id"))
     await write_audit(user, "create", "payment", doc["id"])
     doc.pop("_id", None)
     return doc
 
 
 @router.put("/{pid}")
-async def update_payment(pid: str, body: PaymentInput, user: dict = Depends(get_current_user)):
+async def update_payment(pid: str, body: PaymentInput, user: dict = Depends(require_finance)):
+    return await update_payment_record(db, pid, body, user)
+
+
+async def update_payment_record(store, pid: str, body: PaymentInput, user: dict):
+    db = store
+    await require_finance(user)
+    old = await db.payments.find_one({"id": pid})
+    if not old:
+        raise HTTPException(404, "Ödeme bulunamadı.")
+    if old.get("voided"):
+        raise HTTPException(409, "İptal edilmiş hareket düzenlenemez.")
+    if old.get("is_transfer"):
+        raise HTTPException(409, "Virman tek taraflı düzenlenemez; eşli iptal edip yeniden oluşturun.")
+    if old.get("is_offset"):
+        raise HTTPException(409, "Cari mahsup hareketi tek taraflı düzenlenemez; mahsubu iptal edip yeniden oluşturun.")
     update = body.model_dump(exclude_unset=True)
-    update.pop("id", None)
-    update["updated_at"] = _now()
-    await db.payments.update_one({"id": pid}, {"$set": update})
+    for field in ("id", "_id", "created_at", "created_by", "voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to", "is_offset", "offset_group_id"):
+        update.pop(field, None)
+    doc = {**old, **update}
+    for name, identifier in (("payment_method", "bank_account_id"), ("vendor", "vendor_id")):
+        if name in update and update[name] != old.get(name) and identifier not in update:
+            doc[identifier] = None
+    doc["posting_status"] = update.get("posting_status", old.get("posting_status", "posted"))
+    if "approved" in update and "posting_status" not in update and update["approved"] != old.get("approved"):
+        doc["posting_status"] = "posted" if update["approved"] else "draft"
+    doc["approved"] = doc["posting_status"] == "posted"
+    if any(field in update for field in ("amount", "currency", "fx_rate")) and "usd_amount" not in update:
+        doc["usd_amount"] = 0
+    await normalize_payment_amount(db, doc)
+    doc["updated_at"] = _now()
+    async with settlement_lock(old.get("payable_id"), doc.get("payable_id")):
+        conversion_fields = ("amount", "currency", "fx_rate", "usd_fx_rate", "usd_amount", "type", "payable_id", "bank_account_id", "payment_method")
+        unchanged_conversion = all(doc.get(key) == old.get(key) for key in conversion_fields)
+        await prepare_payment(db, doc, pid, preserve_conversion=unchanged_conversion)
+        doc.pop("_id", None)
+        await db.payments.update_one({"id": pid}, {"$set": doc})
+        for linked_id in set(filter(None, [old.get("payable_id"), doc.get("payable_id")])):
+            await sync_payable(db, linked_id)
     await write_audit(user, "update", "payment", pid)
     return {"ok": True}
 
 
 @router.delete("/{pid}")
-async def delete_payment(pid: str, user: dict = Depends(get_current_user)):
-    await db.payments.delete_one({"id": pid})
-    await write_audit(user, "delete", "payment", pid)
-    return {"ok": True}
+async def delete_payment(pid: str, user: dict = Depends(require_finance)):
+    return await delete_payment_record(db, pid, user)
+
+
+async def delete_payment_record(store, pid: str, user: dict):
+    db = store
+    await require_finance(user)
+    old = await db.payments.find_one({"id": pid})
+    if not old:
+        raise HTTPException(404, "Ödeme bulunamadı.")
+    offset_rows = []
+    if old.get("is_offset") and old.get("offset_group_id"):
+        offset_rows = await db.payments.find({
+            "is_offset": True, "offset_group_id": old["offset_group_id"], "voided": {"$ne": True}
+        }).to_list(None)
+        if not offset_rows:
+            raise HTTPException(409, "Mahsup grubunda iptal edilecek hareket bulunamadı.")
+    lock_ids = [old.get("payable_id"), old.get("transfer_pair_id"), pid,
+        *(row.get("payable_id") for row in offset_rows)]
+    async with settlement_lock(*lock_ids):
+        ids = [pid]
+        if old.get("is_transfer") and old.get("transfer_pair_id"):
+            pair = await db.payments.find_one({"id": old["transfer_pair_id"], "is_transfer": True, "transfer_pair_id": pid})
+            if not pair:
+                raise HTTPException(409, "Virmanın karşı hareketi bulunamadı; eşleştirmeyi kontrol edin.")
+            ids.append(pair["id"])
+        if offset_rows:
+            ids = [row["id"] for row in offset_rows]
+        await db.payments.update_many({"id": {"$in": ids}}, {"$set": {
+            "voided": True, "voided_at": _now(), "voided_by": user["email"]}})
+        parent_ids = {old.get("payable_id"), *(row.get("payable_id") for row in offset_rows)}
+        for payable_id in filter(None, parent_ids):
+            await sync_payable(db, payable_id)
+    await write_audit(user, "void", "payment", pid, {"voided_ids": ids})
+    return {"ok": True, "voided_count": len(ids)}
