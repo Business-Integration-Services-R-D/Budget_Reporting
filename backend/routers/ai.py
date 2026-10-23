@@ -45,13 +45,13 @@ async def _build_assistant_context() -> dict:
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     week_due = await db.payables.aggregate([
-        {"$match": {**OPEN, "kind": "PAYABLE", "due_date": {"$gte": today_iso, "$lte": week}}},
-        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
-    ]).to_list(1)
+        {"$match": {**OPEN, "due_date": {"$gte": today_iso, "$lte": week}}},
+        {"$group": {"_id": "$kind", "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
+    ]).to_list(2)
     month_due = await db.payables.aggregate([
-        {"$match": {**OPEN, "kind": "PAYABLE", "due_date": {"$gte": today_iso, "$lte": month}}},
-        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
-    ]).to_list(1)
+        {"$match": {**OPEN, "due_date": {"$gte": today_iso, "$lte": month}}},
+        {"$group": {"_id": "$kind", "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
+    ]).to_list(2)
     paid_total = await db.payments.aggregate([
         {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
@@ -61,6 +61,14 @@ async def _build_assistant_context() -> dict:
         if r and r[0]:
             return {"total": float(r[0].get("total", 0) or 0), "count": int(r[0].get("count", 0) or 0)}
         return {"total": 0, "count": 0}
+
+    def due_summary(rows):
+        values = {row["_id"]: g([row]) for row in rows}
+        payable = values.get("PAYABLE", {"total": 0, "count": 0})
+        receivable = values.get("RECEIVABLE", {"total": 0, "count": 0})
+        return {"total": receivable["total"] - payable["total"],
+            "count": receivable["count"] + payable["count"],
+            "payable": payable["total"], "receivable": receivable["total"]}
 
     by_ship = await db.payables.aggregate([
         {"$match": {**OPEN, "kind": "PAYABLE"}},
@@ -100,7 +108,7 @@ async def _build_assistant_context() -> dict:
         else: buckets["90+"][0] += amt; buckets["90+"][1] += 1
 
     upcoming = await db.payables.find({
-        **OPEN, "kind": "PAYABLE",
+        **OPEN,
         "due_date": {"$gte": today_iso, "$lte": month}
     }, {"_id": 0}).sort("due_date", 1).to_list(20)
 
@@ -128,7 +136,7 @@ async def _build_assistant_context() -> dict:
     return {
         "kpi": {
             "open_payable": g(open_p), "open_receivable": g(open_r),
-            "overdue": g(overdue), "week_due": g(week_due), "month_due": g(month_due),
+            "overdue": g(overdue), "week_due": due_summary(week_due), "month_due": due_summary(month_due),
             "paid_total": g(paid_total),
         },
         "by_ship": [{"name": r["_id"] or "Tanımsız", "total": r["total"], "count": r["count"]} for r in by_ship],

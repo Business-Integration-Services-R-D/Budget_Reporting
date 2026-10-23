@@ -15,6 +15,22 @@ def _g(r):
     return {"total": 0, "count": 0}
 
 
+async def _due_window(start: str, end: str):
+    rows = await db.payables.aggregate([
+        {"$match": {**OPEN, "due_date": {"$gte": start, "$lte": end}}},
+        {"$group": {"_id": "$kind", "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}},
+    ]).to_list(2)
+    values = {row["_id"]: _g([row]) for row in rows}
+    payable = values.get("PAYABLE", {"total": 0, "count": 0})
+    receivable = values.get("RECEIVABLE", {"total": 0, "count": 0})
+    return {
+        "total": receivable["total"] - payable["total"],
+        "count": receivable["count"] + payable["count"],
+        "payable": payable["total"], "payable_count": payable["count"],
+        "receivable": receivable["total"], "receivable_count": receivable["count"],
+    }
+
+
 @router.get("/kpi")
 async def dashboard_kpi(user: dict = Depends(get_current_user)):
     open_payable = await db.payables.aggregate([
@@ -29,16 +45,8 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
     week_later = (today + timedelta(days=7)).isoformat()
     month_later = (today + timedelta(days=30)).isoformat()
     today_iso = today.isoformat()
-    week_due = await db.payables.aggregate([
-        {"$match": {**OPEN, "kind": "PAYABLE",
-                    "due_date": {"$gte": today_iso, "$lte": week_later}}},
-        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
-    ]).to_list(1)
-    month_due = await db.payables.aggregate([
-        {"$match": {**OPEN, "kind": "PAYABLE",
-                    "due_date": {"$gte": today_iso, "$lte": month_later}}},
-        {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
-    ]).to_list(1)
+    week_due = await _due_window(today_iso, week_later)
+    month_due = await _due_window(today_iso, month_later)
     overdue = await db.payables.aggregate([
         {"$match": {**OPEN, "kind": "PAYABLE",
                     "due_date": {"$lt": today_iso}}},
@@ -59,8 +67,8 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
         "net_position": _g(received_total)["total"] - _g(paid_total)["total"],
         "open_position": _g(open_receivable)["total"] - _g(open_payable)["total"],
         "overdue": _g(overdue),
-        "week_due": _g(week_due),
-        "month_due": _g(month_due),
+        "week_due": week_due,
+        "month_due": month_due,
         "paid_total": _g(paid_total),
         "received_total": _g(received_total),
     }
@@ -123,7 +131,7 @@ async def dashboard_upcoming(days: int = 30, user: dict = Depends(get_current_us
     today = datetime.now(timezone.utc).date().isoformat()
     end = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
     return await db.payables.find({
-        **OPEN, "kind": "PAYABLE",
+        **OPEN,
         "due_date": {"$gte": today, "$lte": end}
     }, {"_id": 0}).sort("due_date", 1).to_list(50)
 

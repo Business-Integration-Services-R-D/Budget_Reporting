@@ -160,6 +160,19 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(buckets['Vadesi gelmemiş'], 1000)
         self.assertEqual(buckets['0-30'], 0)
 
+    async def test_upcoming_windows_net_receivables_against_payables(self):
+        due = (datetime.now(timezone.utc).date() + timedelta(days=3)).isoformat()
+        await self.debt(due_date=due, original_amount=1000, usd_amount=1000)
+        await self.debt(kind='RECEIVABLE', due_date=due, original_amount=1500, usd_amount=1500)
+        kpi = await self.kpi()
+        for window in ('week_due', 'month_due'):
+            self.assertEqual(kpi[window]['payable'], 1000)
+            self.assertEqual(kpi[window]['receivable'], 1500)
+            self.assertEqual(kpi[window]['total'], 500)
+            self.assertEqual(kpi[window]['count'], 2)
+        upcoming = (await self.api.get('/api/dashboard/upcoming?days=30')).json()
+        self.assertEqual({row['kind'] for row in upcoming}, {'PAYABLE', 'RECEIVABLE'})
+
     async def test_vendor_rename_keeps_old_and_new_transactions_together(self):
         p = await self.debt()
         await self.api.put('/api/master/vendors/vendor', json={'name': 'Yeni Firma'})

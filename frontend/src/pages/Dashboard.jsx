@@ -54,8 +54,8 @@ export default function Dashboard() {
     { label: "Açık Alacak", value: kpi?.open_receivable?.total, count: kpi?.open_receivable?.count, icon: ArrowUpFromLine, accent: "#1F8942" },
     { label: "Net Nakit Hareketi", value: kpi?.net_position, count: null, icon: TrendingUp, accent: "#007AFF", isNet: true },
     { label: "Vadesi Geçmiş", value: kpi?.overdue?.total, count: kpi?.overdue?.count, icon: AlertCircle, accent: "#D92D20" },
-    { label: "Önümüzdeki 7 Gün", value: kpi?.week_due?.total, count: kpi?.week_due?.count, icon: CalendarClock, accent: "#B26205" },
-    { label: "Önümüzdeki 30 Gün", value: kpi?.month_due?.total, count: kpi?.month_due?.count, icon: Calendar, accent: "#86868B" },
+    { label: "Önümüzdeki 7 Gün", value: kpi?.week_due?.total, count: kpi?.week_due?.count, icon: CalendarClock, accent: "#B26205", isNet: true, detail: `Tahsilat ${fmtUSD(kpi?.week_due?.receivable)} · Ödeme ${fmtUSD(kpi?.week_due?.payable)}` },
+    { label: "Önümüzdeki 30 Gün", value: kpi?.month_due?.total, count: kpi?.month_due?.count, icon: Calendar, accent: "#86868B", isNet: true, detail: `Tahsilat ${fmtUSD(kpi?.month_due?.receivable)} · Ödeme ${fmtUSD(kpi?.month_due?.payable)}` },
   ];
 
   return (
@@ -91,7 +91,8 @@ export default function Dashboard() {
                 <div className={`text-lg sm:text-2xl font-semibold tracking-tight ${k.isNet && k.value < 0 ? "text-[#D92D20]" : k.isNet && k.value > 0 ? "text-[#1F8942]" : "text-[#1D1D1F]"}`}>
                   {fmtUSD(k.value, k.isNet)}
                 </div>
-                {k.isNet && <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">Tahsilat − Ödeme</div>}
+                {k.detail ? <div className="mt-0.5 text-[9px] sm:text-[10px] text-[#86868B] leading-tight">{k.detail}</div>
+                  : k.isNet && <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">Tahsilat − Ödeme</div>}
                 {k.count !== null && (
                   <div className="mt-0.5 text-[10px] sm:text-xs text-[#86868B]">{privateValue(k.count || 0)} kayıt</div>
                 )}
@@ -225,13 +226,13 @@ export default function Dashboard() {
           <div className="px-4 sm:px-6 py-4 border-b border-[#E5E5EA]/50 flex items-center justify-between">
             <div>
               <h3 className="text-base font-medium text-[#1D1D1F]">Vadesi Yaklaşan</h3>
-              <p className="text-xs text-[#86868B] mt-0.5">Sonraki 30 gün</p>
+              <p className="text-xs text-[#86868B] mt-0.5">Sonraki 30 gün · Borç ve alacak</p>
             </div>
             <CalendarClock className="w-5 h-5 text-[#A1A1A6]" strokeWidth={1.5}/>
           </div>
           <div className="divide-y divide-[#F5F5F7]">
             {upcoming.length === 0 && (
-              <div className="px-4 sm:px-6 py-12 text-center text-sm text-[#86868B]">Yaklaşan borç yok</div>
+              <div className="px-4 sm:px-6 py-12 text-center text-sm text-[#86868B]">Yaklaşan borç veya alacak yok</div>
             )}
             {upcoming.slice(0, 8).map((p, i) => (
               <div key={i} className="px-4 sm:px-6 py-3 flex items-center justify-between hover:bg-[#FAFAFA] transition" data-testid={`upcoming-${i}`}>
@@ -240,7 +241,8 @@ export default function Dashboard() {
                   <div className="text-xs text-[#86868B] truncate">{p.description || p.ship || ""} · {fmtDate(p.due_date)}</div>
                 </div>
                 <div className="ml-3 text-right">
-                  <div className="text-sm font-semibold tabular-nums text-[#1D1D1F]">{fmtUSD(p.remaining_usd ?? p.usd_amount)}</div>
+                  <div className={`text-sm font-semibold tabular-nums ${p.kind === "RECEIVABLE" ? "text-[#1F8942]" : "text-[#D92D20]"}`}>{p.kind === "RECEIVABLE" ? "+" : "−"}{fmtUSD(p.remaining_usd ?? p.usd_amount)}</div>
+                  <div className="text-[10px] text-[#86868B] mb-1">{p.kind === "RECEIVABLE" ? "Tahsilat" : "Ödeme"}</div>
                   <StatusBadge value={p.status}/>
                 </div>
               </div>
