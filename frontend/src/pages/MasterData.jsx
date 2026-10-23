@@ -1,6 +1,6 @@
 import { privateValue } from "@/lib/privacy";
 import { useEffect, useState } from "react";
-import { api, formatApiError } from "@/lib/api";
+import { api, fmtMoney, formatApiError } from "@/lib/api";
 import { Page, Card, EmptyState } from "@/components/Primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,7 @@ const FIELD_LABELS = {
   name: "Ad", code: "Kod", notes: "Notlar", tax_no: "Vergi No",
   manager: "Manager", armator: "Armatör", imo: "IMO No", flag: "Bayrak",
   iban: "IBAN", contact: "İletişim Kişisi", phone: "Telefon", email: "Email",
-  type: "Tip", currency: "Para Birimi", balance: "Bakiye", company: "Şirket",
+  type: "Tip", currency: "Para Birimi", balance: "Açılış Bakiyesi", current_balance: "Mevcut Bakiye", company: "Şirket",
   rate_to_tl: "TL Karşılığı", color: "Renk", order: "Sıra", country: "Ülke",
 };
 
@@ -62,12 +62,29 @@ export default function MasterData() {
   const [search, setSearch] = useState("");
 
   const active = COLLECTIONS.find(c => c.key === activeKey);
+  const tableFields = activeKey === "banks"
+    ? active.fields.flatMap((field) => field === "balance" ? [field, "current_balance"] : [field])
+    : active.fields;
 
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/master/${activeKey}`);
-      setItems(data);
+      if (activeKey === "banks") {
+        const [{ data: definitions }, { data: balances }] = await Promise.all([
+          api.get("/master/banks"),
+          api.get("/bank-accounts"),
+        ]);
+        const balancesById = new Map(balances.map((bank) => [bank.id, bank]));
+        setItems(definitions.map((definition) => ({
+          ...definition,
+          current_balance: balancesById.get(definition.id)?.current_balance ?? Number(definition.balance || 0),
+          balance_currency: balancesById.get(definition.id)?.balance_currency || definition.currency || "TL",
+          balance_estimated: balancesById.get(definition.id)?.balance_estimated || false,
+        })));
+      } else {
+        const { data } = await api.get(`/master/${activeKey}`);
+        setItems(data);
+      }
     } catch (e) { toast.error(formatApiError(e)); }
     finally { setLoading(false); }
   };
@@ -84,11 +101,15 @@ export default function MasterData() {
 
   const save = async () => {
     try {
+      const payload = { ...editing };
+      for (const derivedField of ["current_balance", "balance_currency", "balance_estimated"]) {
+        delete payload[derivedField];
+      }
       if (editing.id) {
-        await api.put(`/master/${activeKey}/${editing.id}`, editing);
+        await api.put(`/master/${activeKey}/${editing.id}`, payload);
         toast.success("Güncellendi");
       } else {
-        await api.post(`/master/${activeKey}`, editing);
+        await api.post(`/master/${activeKey}`, payload);
         toast.success("Eklendi");
       }
       setOpen(false); setEditing(null); load();
@@ -149,7 +170,7 @@ export default function MasterData() {
               <table className="w-full text-sm">
                 <thead className="bg-[#FAFAFA] sticky top-0">
                   <tr className="text-left">
-                    {active.fields.map((f) => (
+                    {tableFields.map((f) => (
                       <th key={f} className="px-4 py-2.5 text-[11px] uppercase tracking-wider text-[#86868B] font-semibold">{FIELD_LABELS[f] || f}</th>
                     ))}
                     <th className="px-4 py-2.5"></th>
@@ -158,8 +179,15 @@ export default function MasterData() {
                 <tbody>
                   {filtered.map((row) => (
                     <tr key={row.id} data-testid={`row-master-${row.id}`} onClick={() => openEdit(row)} className="border-b border-[#F5F5F7] hover:bg-[#FAFAFA] cursor-pointer transition">
-                      {active.fields.map((f) => (
-                        <td key={f} className="px-4 py-2 text-[#1D1D1F] truncate max-w-xs">{activeKey === "payment_statuses" && f === "color" ? <StatusColor value={row[f]} /> : ["balance", "rate_to_tl"].includes(f) ? privateValue(String(row[f] ?? "—")) : String(row[f] ?? "—")}</td>
+                      {tableFields.map((f) => (
+                        <td key={f} className="px-4 py-2 text-[#1D1D1F] truncate max-w-xs">
+                          {activeKey === "payment_statuses" && f === "color" ? <StatusColor value={row[f]} />
+                            : activeKey === "banks" && ["balance", "current_balance"].includes(f) ? (
+                              <span title={f === "current_balance" && row.balance_estimated ? "Eski farklı dövizli hareketler güncel kurla tahmin edilmiştir" : undefined}>
+                                {fmtMoney(row[f], row.balance_currency || row.currency || "TL")}{f === "current_balance" && row.balance_estimated ? " *" : ""}
+                              </span>
+                            ) : ["balance", "rate_to_tl"].includes(f) ? privateValue(String(row[f] ?? "—")) : String(row[f] ?? "—")}
+                        </td>
                       ))}
                       <td className="px-4 py-2 text-right">
                         <button onClick={(e) => { e.stopPropagation(); remove(row.id); }} className="p-1.5 rounded-md hover:bg-[#FFEBEA] text-[#86868B] hover:text-[#D92D20] transition">
@@ -209,6 +237,9 @@ export default function MasterData() {
                     onChange={(e) => setEditing({...editing, [f]: e.target.value})}
                     className="bg-[#F5F5F7] border-0 rounded-lg"
                   />}
+                  {activeKey === "banks" && f === "balance" && (
+                    <p className="text-xs text-[#86868B]">Bu alan açılış bakiyesidir. Güncel bakiye ödeme ve tahsilat hareketlerinden otomatik hesaplanır.</p>
+                  )}
                 </div>
               ))}
               <div className="flex gap-2 pt-4 border-t border-[#E5E5EA]">
