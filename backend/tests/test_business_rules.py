@@ -254,3 +254,62 @@ class BusinessRuleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second.get('is_transfer', False))
         await self.api.delete('/api/payments/' + second['id'])
         self.assertFalse((await self.db.payments.find_one({'id': first['id']})).get('voided', False))
+
+    async def test_current_account_keeps_open_documents_visible_at_zero_net(self):
+        debt = await self.debt(original_amount=1000, usd_amount=1000)
+        await self.debt(kind='RECEIVABLE', original_amount=800, usd_amount=800)
+        self.assertEqual((await self.pay(debt, amount=200)).status_code, 200)
+        account = (await self.api.get('/api/current-accounts/vendor')).json()['summary']
+        self.assertEqual(account['balance'], 0)
+        self.assertEqual(account['open_debt'], 800)
+        self.assertEqual(account['open_receivable'], 800)
+        self.assertTrue(account['has_open_documents'])
+        self.assertFalse(account['is_closed'])
+
+    async def test_independent_payment_is_unallocated_and_does_not_close_document(self):
+        await self.debt(original_amount=1000, usd_amount=1000)
+        response = await self.pay(amount=400)
+        self.assertEqual(response.status_code, 200, response.text)
+        account = (await self.api.get('/api/current-accounts/vendor')).json()['summary']
+        self.assertEqual(account['paid'], 0)
+        self.assertEqual(account['unallocated_paid'], 400)
+        self.assertEqual(account['open_debt'], 1000)
+        self.assertEqual(account['balance'], 600)
+        self.assertEqual(account['fx_difference_usd'], 0)
+
+    async def test_guided_offset_settles_both_sides_without_cash_and_cancels_as_group(self):
+        debt = await self.debt(original_amount=1000, usd_amount=1000)
+        receivable = await self.debt(kind='RECEIVABLE', original_amount=800, usd_amount=800)
+        before_bank = (await self.api.get('/api/bank-accounts')).json()[0]['current_balance']
+        response = await self.api.post('/api/current-accounts/vendor/offset', json={'amount_usd': 600})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['remaining_debt'], 400)
+        self.assertEqual(response.json()['remaining_receivable'], 200)
+        rows = await self.db.payments.find({'offset_group_id': response.json()['offset_group_id']}).to_list(None)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['is_offset'] and not row.get('payment_method') for row in rows))
+        self.assertEqual((await self.kpi())['net_position'], 0)
+        self.assertEqual((await self.api.get('/api/bank-accounts')).json()[0]['current_balance'], before_bank)
+        account = (await self.api.get('/api/current-accounts/vendor')).json()['summary']
+        self.assertEqual((account['open_debt'], account['open_receivable'], account['balance']), (400, 200, 200))
+        self.assertEqual((account['paid'], account['received']), (600, 600))
+        self.assertEqual((await self.api.put('/api/payments/' + rows[0]['id'], json={'amount': 10})).status_code, 409)
+
+        cancelled = await self.api.delete('/api/payments/' + rows[0]['id'])
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json()['voided_count'], 2)
+        self.assertEqual(await self.db.payments.count_documents({'offset_group_id': response.json()['offset_group_id'], 'voided': True}), 2)
+        account = (await self.api.get('/api/current-accounts/vendor')).json()['summary']
+        self.assertEqual((account['open_debt'], account['open_receivable'], account['balance']), (1000, 800, 200))
+        self.assertEqual((await self.db.payables.find_one({'id': debt['id']}))['status'], 'ONAYLANDI')
+        self.assertEqual((await self.db.payables.find_one({'id': receivable['id']}))['status'], 'ONAYLANDI')
+
+    async def test_offset_validates_limit_permission_and_forged_flags(self):
+        await self.debt(original_amount=1000, usd_amount=1000)
+        await self.debt(kind='RECEIVABLE', original_amount=800, usd_amount=800)
+        self.assertEqual((await self.api.post('/api/current-accounts/vendor/offset', json={'amount_usd': 801})).status_code, 400)
+        forged = await self.pay(amount=100, is_offset=True, offset_group_id='forged')
+        self.assertEqual(forged.status_code, 200, forged.text)
+        self.assertFalse(forged.json().get('is_offset', False))
+        self.user['role'] = 'viewer'
+        self.assertEqual((await self.api.post('/api/current-accounts/vendor/offset', json={'amount_usd': 100})).status_code, 403)

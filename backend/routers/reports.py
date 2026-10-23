@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from database import db
 from settlements import OPEN_AMOUNT
-from finance import POSTED, OPEN, APPROVED, approved, currency, basis, allocation
+from finance import POSTED, CASH_POSTED, OPEN, APPROVED, approved, currency, basis, allocation
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -67,7 +67,7 @@ async def report_monthly(months: int = 12, user: dict = Depends(get_current_user
 @router.get("/top-vendors")
 async def report_top_vendors(limit: int = 20, user: dict = Depends(get_current_user)):
     rows = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$vendor", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": limit}
     ]).to_list(50)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends
 from database import db
 from settlements import OPEN_AMOUNT
-from finance import POSTED, OPEN, APPROVED
+from finance import POSTED, CASH_POSTED, OPEN, APPROVED
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -45,11 +45,11 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     paid_total = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
     received_total = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TAHSİL"}},
+        {"$match": {**CASH_POSTED, "type": "TAHSİL"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
 
@@ -69,7 +69,7 @@ async def dashboard_kpi(user: dict = Depends(get_current_user)):
 @router.get("/cashflow")
 async def dashboard_cashflow(months: int = 12, user: dict = Depends(get_current_user)):
     pipeline = [
-        {"$match": {**POSTED, "date": {"$ne": None}}},
+        {"$match": {**CASH_POSTED, "date": {"$ne": None}}},
         {"$addFields": {"_d": {"$dateFromString": {"dateString": "$date", "onError": None}}}},
         {"$match": {"_d": {"$ne": None}}},
         {"$group": {
@@ -101,7 +101,7 @@ async def dashboard_by_ship(user: dict = Depends(get_current_user)):
 @router.get("/by-company")
 async def dashboard_by_company(user: dict = Depends(get_current_user)):
     rows = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$paying_company", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(50)

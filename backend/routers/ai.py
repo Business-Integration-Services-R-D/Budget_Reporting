@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from database import db
-from finance import OPEN, POSTED, APPROVED
+from finance import OPEN, POSTED, CASH_POSTED, APPROVED
 from settlements import OPEN_AMOUNT
 from dependencies import get_current_user, write_audit, _uid, _now
 from ai_service import chat_with_assistant
@@ -53,7 +53,7 @@ async def _build_assistant_context() -> dict:
         {"$group": {"_id": None, "total": {"$sum": OPEN_AMOUNT}, "count": {"$sum": 1}}}
     ]).to_list(1)
     paid_total = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": None, "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}}
     ]).to_list(1)
 
@@ -68,7 +68,7 @@ async def _build_assistant_context() -> dict:
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
     by_company = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$paying_company", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
@@ -78,7 +78,7 @@ async def _build_assistant_context() -> dict:
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
     top_vendors = await db.payments.aggregate([
-        {"$match": {**POSTED, "type": "TEDİYE"}},
+        {"$match": {**CASH_POSTED, "type": "TEDİYE"}},
         {"$group": {"_id": "$vendor", "total": {"$sum": "$usd_amount"}, "count": {"$sum": 1}}},
         {"$sort": {"total": -1}}, {"$limit": 15}
     ]).to_list(20)
@@ -107,7 +107,7 @@ async def _build_assistant_context() -> dict:
     recent_payments = await db.payments.find(POSTED, {"_id": 0}).sort("created_at", -1).to_list(25)
 
     cashflow = await db.payments.aggregate([
-        {"$match": {**POSTED, "date": {"$ne": None}}},
+        {"$match": {**CASH_POSTED, "date": {"$ne": None}}},
         {"$addFields": {"_d": {"$dateFromString": {"dateString": "$date", "onError": None}}}},
         {"$match": {"_d": {"$ne": None}}},
         {"$group": {"_id": {"y": {"$year": "$_d"}, "m": {"$month": "$_d"}, "t": "$type"}, "total": {"$sum": "$usd_amount"}}},

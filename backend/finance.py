@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 # Old records without posting_status were already treated as posted.
 POSTED = {'voided': {'$ne': True}, 'posting_status': {'$ne': 'draft'}}
+CASH_POSTED = {**POSTED, 'is_offset': {'$ne': True}}
 APPROVED = {'status': {'$nin': ['TASLAK', 'ONAY BEKLİYOR', 'İPTAL']},
             'approval_status': {'$nin': ['draft', 'pending']}}
 OPEN = {**APPROVED, 'status': {'$nin': ['TASLAK', 'ONAY BEKLİYOR', 'İPTAL', 'ÖDENDİ']}}
@@ -73,7 +74,9 @@ async def resolve_vendor(db, doc):
 
 
 async def resolve_bank(db, doc):
-    item = await reference(db, 'banks', doc.get('payment_method'), doc.get('bank_account_id'), required=posted(doc))
+    item = await reference(
+        db, 'banks', doc.get('payment_method'), doc.get('bank_account_id'),
+        required=posted(doc) and not doc.get('is_offset'))
     if item:
         doc['bank_account_id'], doc['payment_method'] = item['id'], item['name']
     return item

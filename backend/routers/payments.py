@@ -71,7 +71,7 @@ async def create_payment_record(store, body: PaymentInput, user: dict):
     if "posting_status" not in body.model_fields_set and body.approved is False:
         doc["posting_status"] = "draft"
     doc["approved"] = doc["posting_status"] == "posted"
-    for field in ("voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to"):
+    for field in ("voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to", "is_offset", "offset_group_id"):
         doc.pop(field, None)
     await normalize_payment_amount(db, doc)
     async with settlement_lock(doc.get("payable_id")):
@@ -98,8 +98,10 @@ async def update_payment_record(store, pid: str, body: PaymentInput, user: dict)
         raise HTTPException(409, "İptal edilmiş hareket düzenlenemez.")
     if old.get("is_transfer"):
         raise HTTPException(409, "Virman tek taraflı düzenlenemez; eşli iptal edip yeniden oluşturun.")
+    if old.get("is_offset"):
+        raise HTTPException(409, "Cari mahsup hareketi tek taraflı düzenlenemez; mahsubu iptal edip yeniden oluşturun.")
     update = body.model_dump(exclude_unset=True)
-    for field in ("id", "_id", "created_at", "created_by", "voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to"):
+    for field in ("id", "_id", "created_at", "created_by", "voided", "voided_at", "voided_by", "is_transfer", "transfer_pair_id", "transfer_from", "transfer_to", "is_offset", "offset_group_id"):
         update.pop(field, None)
     doc = {**old, **update}
     for name, identifier in (("payment_method", "bank_account_id"), ("vendor", "vendor_id")):
@@ -136,15 +138,28 @@ async def delete_payment_record(store, pid: str, user: dict):
     old = await db.payments.find_one({"id": pid})
     if not old:
         raise HTTPException(404, "Ödeme bulunamadı.")
-    async with settlement_lock(old.get("payable_id"), old.get("transfer_pair_id"), pid):
+    offset_rows = []
+    if old.get("is_offset") and old.get("offset_group_id"):
+        offset_rows = await db.payments.find({
+            "is_offset": True, "offset_group_id": old["offset_group_id"], "voided": {"$ne": True}
+        }).to_list(None)
+        if not offset_rows:
+            raise HTTPException(409, "Mahsup grubunda iptal edilecek hareket bulunamadı.")
+    lock_ids = [old.get("payable_id"), old.get("transfer_pair_id"), pid,
+        *(row.get("payable_id") for row in offset_rows)]
+    async with settlement_lock(*lock_ids):
         ids = [pid]
         if old.get("is_transfer") and old.get("transfer_pair_id"):
             pair = await db.payments.find_one({"id": old["transfer_pair_id"], "is_transfer": True, "transfer_pair_id": pid})
             if not pair:
                 raise HTTPException(409, "Virmanın karşı hareketi bulunamadı; eşleştirmeyi kontrol edin.")
             ids.append(pair["id"])
+        if offset_rows:
+            ids = [row["id"] for row in offset_rows]
         await db.payments.update_many({"id": {"$in": ids}}, {"$set": {
             "voided": True, "voided_at": _now(), "voided_by": user["email"]}})
-        await sync_payable(db, old.get("payable_id"))
-    await write_audit(user, "void", "payment", pid)
-    return {"ok": True}
+        parent_ids = {old.get("payable_id"), *(row.get("payable_id") for row in offset_rows)}
+        for payable_id in filter(None, parent_ids):
+            await sync_payable(db, payable_id)
+    await write_audit(user, "void", "payment", pid, {"voided_ids": ids})
+    return {"ok": True, "voided_count": len(ids)}
