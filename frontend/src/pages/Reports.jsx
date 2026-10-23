@@ -51,12 +51,18 @@ export default function Reports() {
   };
 
   useEffect(() => {
+    let active = true;
+    setData(null);
     (async () => {
       setLoading(true);
-      try { setData((await api.get(`/reports/${selected.id}${query()}`)).data); }
-      catch (e) { toast.error(formatApiError(e)); setData(null); }
-      finally { setLoading(false); }
+      try {
+        const response = await api.get(`/reports/${selected.id}${query()}`);
+        if (active) setData(response.data);
+      }
+      catch (e) { if (active) { toast.error(formatApiError(e)); setData(null); } }
+      finally { if (active) setLoading(false); }
     })();
+    return () => { active = false; };
   }, [selected, start, end, months, dataset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const download = async (format) => {
@@ -74,7 +80,7 @@ export default function Reports() {
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
       <Card className="lg:col-span-4 overflow-hidden">
         <div className="px-5 py-4 border-b border-[#E5E5EA]/50"><h3 className="text-base font-medium">Rapor Şablonları</h3><p className="text-xs text-[#86868B] mt-0.5">{REPORTS.length} hazır rapor</p></div>
-        <div className="divide-y divide-[#F5F5F7]">{REPORTS.map((r) => <button key={r.id} data-testid={`report-${r.id}`} onClick={() => setSelected(r)} className={`w-full px-5 py-3.5 flex items-start gap-3 hover:bg-[#FAFAFA] text-left transition ${selected.id === r.id ? "bg-[#FAFAFA]" : ""}`}>
+        <div className="divide-y divide-[#F5F5F7]">{REPORTS.map((r) => <button key={r.id} data-testid={`report-${r.id}`} onClick={() => { setData(null); setSelected(r); }} className={`w-full px-5 py-3.5 flex items-start gap-3 hover:bg-[#FAFAFA] text-left transition ${selected.id === r.id ? "bg-[#FAFAFA]" : ""}`}>
           <div className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 ${selected.id === r.id ? "bg-[#111111] text-white" : "bg-[#F5F5F7] text-[#3A3A3C]"}`}><r.icon className="w-4 h-4" strokeWidth={1.5}/></div>
           <div><div className="text-sm font-medium">{r.label}</div><div className="text-xs text-[#86868B]">{r.desc}</div></div>
         </button>)}</div>
@@ -107,6 +113,8 @@ const CategoryBadge = ({ value }) => {
 };
 
 const ReportRenderer = ({ report, data }) => {
+  const arrayReports = ["by-ship-detail", "aging", "monthly-projection", "top-vendors", "by-currency"];
+  if (arrayReports.includes(report) && !Array.isArray(data)) return <EmptyState icon={FileBarChart2} title="Veri yükleniyor" message="Rapor verileri hazırlanıyor."/>;
   const empty = !data || (Array.isArray(data) && data.length === 0) || (report === "cash-report" && !data.movements?.length && !data.balances?.length) || (report === "office-payments" && !data.weeks?.length) || (report === "all-debts" && !data.rows?.length);
   if (empty) return <EmptyState icon={FileBarChart2} title="Veri yok" message="Bu rapor için henüz veri yok."/>;
   if (report === "cash-report") return <div className="space-y-8 min-w-[720px]">
