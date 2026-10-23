@@ -62,35 +62,50 @@ def _write_sheet(wb, name, rows, columns):
     return ws
 
 
-async def _report_tables(report_id, start=None, end=None, months=30, user=None):
+async def _report_tables(report_id, start=None, end=None, months=30, user=None, dataset="reference"):
     """Return [(title, headers, rows)] for screen reports and both export formats."""
     from routers import reports
     if report_id == "cash-report":
-        data = await reports.cash_report_data(start, end)
-        movements = [[index, p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
-            p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"),
-            p.get("amount"), p.get("usd_amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
-        balances = [[b.get("name"), b.get("type"), b.get("balance_currency"), b.get("opening_balance"),
-            b.get("in"), b.get("out"), b.get("current_balance")] for b in data["balances"]]
-        return [("Hareketler", ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Tutar", "USD", "Masraf Merkezi"], movements),
-                ("Hesap Bakiyeleri", ["Hesap", "Tip", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut Bakiye"], balances)]
+        data = await reports._reference_report(report_id, dataset) or await reports.cash_report_data(start, end)
+        if data.get("dataset") == "reference":
+            movements = [[p.get("sequence", index), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
+                p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"), p.get("amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
+            movement_headers = ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Fiili Tutar", "Masraf Merkezi"]
+        else:
+            movements = [[p.get("sequence", index), p.get("type"), p.get("date"), p.get("description") or p.get("vendor"),
+                p.get("payment_method"), p.get("paying_company"), p.get("currency"), p.get("fx_rate"),
+                p.get("amount"), p.get("usd_amount"), p.get("ship")] for index, p in enumerate(data["movements"], start=1)]
+            movement_headers = ["No", "İşlem Türü", "Tarih", "Açıklama", "Ödeme Şekli", "Şirket", "Döviz", "Kur", "Tutar", "USD", "Masraf Merkezi"]
+        if data.get("dataset") == "reference":
+            balances = [[b.get("name"), b.get("tl"), b.get("usd"), b.get("eur"), b.get("pound"), b.get("yapi_kredi"), b.get("yapi_kredi_company")] for b in data["balances"]]
+            balance_headers = ["Bakiye", "TL", "USD", "EUR", "POUND", "YAPI KREDİ", "Şirket"]
+        else:
+            balances = [[b.get("name"), b.get("type"), b.get("balance_currency"), b.get("opening_balance"), b.get("in"), b.get("out"), b.get("current_balance")] for b in data["balances"]]
+            balance_headers = ["Hesap", "Tip", "Para Birimi", "Açılış", "Giren USD", "Çıkan USD", "Mevcut Bakiye"]
+        return [("Hareketler", movement_headers, movements),
+                ("Hesap Bakiyeleri", balance_headers, balances)]
     if report_id == "office-payments":
-        data = await reports.office_payments_data(start, end)
+        data = await reports._reference_report(report_id, dataset) or await reports.office_payments_data(start, end)
         rows = []
         for week in data["weeks"]:
             for p in week["rows"]:
                 category = p["budget_category"] if p["budget_category"] in {"BANKA", "OPERASYON", "DİĞER"} else "DİĞER"
-                rows.append([week["week"], week["start"], week["end"], p["date"], p["description"], p["vendor"],
+                rows.append([week["week"], week["start"], week["end"], p["date"], p["description"], p.get("vendor"),
                     p["company_ship"], p["amount"], p["currency"], p["usd_amount"],
                     p["usd_amount"] if category == "BANKA" else 0,
                     p["usd_amount"] if category == "OPERASYON" else 0,
                     p["usd_amount"] if category == "DİĞER" else 0])
-            category_totals = {name: sum(r[10 + index] for r in rows if r[0] == week["week"]) for index, name in enumerate(("BANKA", "OPERASYON", "DİĞER"))}
+            category_totals = week.get("category_totals") or {name: sum(r[10 + index] for r in rows if r[0] == week["week"]) for index, name in enumerate(("BANKA", "OPERASYON", "DİĞER"))}
             rows.append([week["week"], week["start"], week["end"], None, "HAFTA TOPLAMI", None, None, None, None,
                          week["total_usd"], category_totals["BANKA"], category_totals["OPERASYON"], category_totals["DİĞER"]])
         return [("Ofis Ödemeleri", ["Hafta", "Başlangıç", "Bitiş", "Tarih", "Açıklama", "Firma", "Şirket/Gemi", "Tutar", "Döviz", "USD", "BANKA", "OPERASYON", "DİĞER"], rows)]
     if report_id == "all-debts":
-        data = await reports.all_debts_data(months)
+        data = await reports._reference_report(report_id, dataset) or await reports.all_debts_data(months)
+        if data.get("dataset") == "reference":
+            headers = ["Grup", "Açıklama/Firma", "Gemi", "Borç Türü", "Toplam USD", *data["months"]]
+            rows = [[p["description"] if p.get("is_total") else p.get("group"), p.get("description"), p.get("ship"), p.get("debt_type"), p.get("total"),
+                     *[p.get("monthly", {}).get(month, 0) for month in data["months"]]] for p in data["rows"]]
+            return [("Tüm Borçlar", headers, rows)]
         headers = ["Grup", "Açıklama/Firma", "Gemi", "Borç Türü", "Vade", "Vadesi Geçmiş", "Toplam USD", *data["months"]]
         rows = []
         for group in sorted({p["group"] for p in data["rows"]}):
@@ -123,6 +138,36 @@ async def _report_tables(report_id, start=None, end=None, months=30, user=None):
 def _report_xlsx(title, tables, report_id=None):
     wb = Workbook()
     wb.remove(wb.active)
+    if report_id == "cash-report" and len(tables) == 2:
+        first_title, first_headers, first_rows = tables[0]
+        second_title, second_headers, second_rows = tables[1]
+        ws = wb.create_sheet(first_title)
+        ws.append([title])
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(first_headers))
+        ws.cell(1, 1).font = Font(bold=True, color="FFFFFF", size=16)
+        ws.cell(1, 1).fill = PatternFill("solid", fgColor="1F4E78")
+        ws.append([f"Oluşturulma: {datetime.now().strftime('%d.%m.%Y %H:%M')}"])
+        ws.append([])
+        ws.append(first_headers)
+        _header_style(ws, 4)
+        for row in first_rows:
+            ws.append(row)
+            color = "E2F0D9" if row[1] == "TAHSİL" else "FCE4D6"
+            ws.cell(ws.max_row, 2).fill = PatternFill("solid", fgColor=color)
+            ws.cell(ws.max_row, 2).font = Font(bold=True, color="1F8942" if row[1] == "TAHSİL" else "D92D20")
+        ws.append([])
+        ws.append([second_title])
+        ws.cell(ws.max_row, 1).font = Font(bold=True, size=13, color="1F4E78")
+        ws.append(second_headers)
+        _header_style(ws, ws.max_row)
+        for row in second_rows:
+            ws.append(row)
+        ws.freeze_panes = "A5"
+        _auto_width(ws, 42)
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+        return stream
     for sheet_title, headers, rows in tables:
         ws = wb.create_sheet(sheet_title[:31])
         ws.append(headers)
@@ -193,13 +238,14 @@ def _report_pdf(title, tables, report_id=None):
     styles["Title"].fontName = font
     styles["Heading2"].fontName = font
     styles["Normal"].fontName = font
-    styles["Normal"].fontSize = 7
-    styles["Normal"].leading = 9
+    compact_size = {"cash-report": 5, "office-payments": 4.5, "all-debts": 2.6}.get(report_id, 7)
+    styles["Normal"].fontSize = compact_size
+    styles["Normal"].leading = compact_size + 1
     story = [Paragraph(title, styles["Title"]), Paragraph(f"Oluşturulma: {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles["Normal"]), Spacer(1, 12)]
     first_output = True
     for sheet_title, headers, rows in tables:
         segments = [(sheet_title, headers, rows)]
-        if len(headers) > 15:
+        if len(headers) > 15 and report_id != "all-debts":
             fixed, chunk = 7, 8
             segments = []
             for offset in range(fixed, len(headers), chunk):
@@ -207,25 +253,37 @@ def _report_pdf(title, tables, report_id=None):
                 segments.append((f"{sheet_title} · {headers[offset]} – {headers[indexes[-1]]}",
                     [headers[i] for i in indexes], [[row[i] for i in indexes] for row in rows]))
         for segment_title, segment_headers, segment_rows in segments:
-            if not first_output:
+            if not first_output and report_id != "cash-report":
                 story.append(PageBreak())
             first_output = False
             story.append(Paragraph(segment_title, styles["Heading2"]))
             story.append(Spacer(1, 6))
             cell = lambda value: Paragraph(escape(str(value if value is not None else "—")), styles["Normal"])
-            data = [[cell(h) for h in segment_headers], *[[cell(v) for v in row] for row in segment_rows]]
+            if report_id == "all-debts":
+                data = [[str(h) for h in segment_headers], *[[str(v if v is not None else "—").replace("\n", " ") for v in row] for row in segment_rows]]
+            else:
+                data = [[cell(h) for h in segment_headers], *[[cell(v) for v in row] for row in segment_rows]]
             available = page[0] - 44
-            widths = [available / max(1, len(segment_headers))] * len(segment_headers)
+            if report_id == "all-debts":
+                fixed_widths = [65, 125, 28, 58, 43]
+                month_width = (available - sum(fixed_widths)) / max(1, len(segment_headers) - len(fixed_widths))
+                widths = fixed_widths + [month_width] * (len(segment_headers) - len(fixed_widths))
+            else:
+                widths = [available / max(1, len(segment_headers))] * len(segment_headers)
             table = Table(data, repeatRows=1, colWidths=widths)
             table.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111111")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("FONTNAME", (0, 0), (-1, -1), font),
-                ("FONTSIZE", (0, 0), (-1, -1), 6 if len(segment_headers) > 10 else 7),
+                ("FONTSIZE", (0, 0), (-1, -1), compact_size),
+                ("LEADING", (0, 0), (-1, -1), compact_size + .4),
                 ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#E5E5EA")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAFAFA")]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING", (0, 0), (-1, -1), .3 if report_id == "all-debts" else 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), .3 if report_id == "all-debts" else 2),
+                ("TOPPADDING", (0, 0), (-1, -1), .2 if report_id == "all-debts" else 1.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), .2 if report_id == "all-debts" else 1.5),
             ]))
             if report_id == "cash-report" and segment_title.startswith("Hareketler"):
                 for row_index, row in enumerate(segment_rows, start=1):
@@ -371,12 +429,12 @@ async def export_excel(user: dict = Depends(get_current_user)):
 
 @router.get("/reports/{report_id}")
 async def export_report(report_id: str, format: str = "xlsx", start: str | None = None,
-                        end: str | None = None, months: int = 30,
+                        end: str | None = None, months: int = 30, dataset: str = "reference",
                         user: dict = Depends(get_current_user)):
     """Download any report as a styled XLSX or printable PDF."""
     if format not in {"xlsx", "pdf"}:
         raise HTTPException(400, "Format xlsx veya pdf olmalıdır.")
-    tables = await _report_tables(report_id, start, end, months, user)
+    tables = await _report_tables(report_id, start, end, months, user, dataset)
     title = REPORT_NAMES.get(report_id, report_id)
     stream = _report_xlsx(title, tables, report_id) if format == "xlsx" else _report_pdf(title, tables, report_id)
     stamp = datetime.now().strftime("%Y%m%d-%H%M")

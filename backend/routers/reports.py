@@ -28,6 +28,15 @@ async def cash_report_data(start: str | None = None, end: str | None = None):
     return {"movements": movements, "balances": balances}
 
 
+async def _reference_report(report_id: str, dataset: str):
+    if dataset != "reference":
+        return None
+    snapshot = await db.report_snapshots.find_one({"report_id": report_id}, {"_id": 0})
+    if snapshot:
+        snapshot["dataset"] = "reference"
+    return snapshot
+
+
 async def office_payments_data(start: str | None = None, end: str | None = None):
     """Open/approved debts grouped into ISO weeks for the office payment plan."""
     query = {**OPEN, "kind": "PAYABLE", **_date_query("due_date", start, end)}
@@ -177,15 +186,15 @@ async def report_currency_position(user: dict = Depends(get_current_user)):
 
 
 @router.get("/cash-report")
-async def report_cash(start: str | None = None, end: str | None = None, user: dict = Depends(get_current_user)):
-    return await cash_report_data(start, end)
+async def report_cash(start: str | None = None, end: str | None = None, dataset: str = "reference", user: dict = Depends(get_current_user)):
+    return await _reference_report("cash-report", dataset) or await cash_report_data(start, end)
 
 
 @router.get("/office-payments")
-async def report_office_payments(start: str | None = None, end: str | None = None, user: dict = Depends(get_current_user)):
-    return await office_payments_data(start, end)
+async def report_office_payments(start: str | None = None, end: str | None = None, dataset: str = "reference", user: dict = Depends(get_current_user)):
+    return await _reference_report("office-payments", dataset) or await office_payments_data(start, end)
 
 
 @router.get("/all-debts")
-async def report_all_debts(months: int = 30, user: dict = Depends(get_current_user)):
-    return await all_debts_data(months)
+async def report_all_debts(months: int = 30, dataset: str = "reference", user: dict = Depends(get_current_user)):
+    return await _reference_report("all-debts", dataset) or await all_debts_data(months)
